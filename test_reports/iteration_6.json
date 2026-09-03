@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 6 retest of the /lock signOut bug (iter4 HIGH) after E1's iter5b fix. FRONTEND ONLY per request. Fix confirmed applied in all three files: /app/frontend/app/lock.tsx:22-24, /app/frontend/app/set-pin.tsx:28-30, /app/frontend/app/settings.tsx:21-23 now read `const { token, loading, ... } = useAuth()` and gate the redirect with `if (!loading && !token) router.replace('/welcome')` with correct deps [loading, token, router]. AuthCtx already exposes `loading` (src/auth.tsx:8,27,107). End-to-end Playwright run (mobile viewport 390x844) executed 6 assertions on a freshly registered account (iter5b+<ts>@fiskid.it / password123, PIN 123456) and ALL 6 PASSED: (1) page.goto('/settings') with valid token → stays on /settings (no redirect). (2) page.goto('/set-pin') with valid token, no PIN yet → stays on /set-pin. (3) After settings→'Blocca ora' the /lock screen renders and does NOT auto-redirect to /welcome during initial render. (4) page.reload() on /lock after PIN was set → still on /lock (no bounce to /welcome). (5) Tapping testID 'lock-signout' on /lock → URL leaves /lock and lands on /welcome. (6) The 'Mai più comunicare a voce' welcome headline is visible after signOut. The iter5 loading-race regression is fully resolved AND the original iter4 HIGH lock-signout bug is fixed. NOTE (out of scope, informational): after signOut and re-login on the same web session, the app routed directly to /dashboard instead of /lock — likely because pinLock storage was cleared or because unlocked state seed on this device did not treat the surviving PIN as enabled. This did not affect any of the required assertions and is not a regression of the current fix, but E1 may want to verify signOut→login PIN-gating separately. Also carried over from iter1–5: React-Native-Web deprecation warnings ('shadow*' style props deprecated, props.pointerEvents deprecated) are non-blocking console noise.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global", "issues": ["RN-Web deprecation warnings persist: 'shadow*' style props deprecated (use boxShadow); props.pointerEvents deprecated (use style.pointerEvents). Non-blocking, carried over from iter1–5."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "(INFO) Post-signOut → re-login on the same browser session took the user straight to /dashboard instead of /lock, even though a PIN had been set earlier in the session. Not blocking this fix but E1 may want to confirm whether pinLock (SecureStore/AsyncStorage on web) is intentionally cleared on signOut or whether the initial `setUnlocked(!enabled)` in signIn correctly treats a surviving PIN as 'lock required'.",
+    "(LOW) Address the residual RN-Web deprecation warnings ('shadow*' → boxShadow, props.pointerEvents → style.pointerEvents) when convenient — no functional impact."
+  ],
+  "critical_code_review_comments": [
+    "lock.tsx:22-24 — correctly gated on `!loading && !token` with `loading` in deps. Good.",
+    "set-pin.tsx:28-30 — same correct guard. Good.",
+    "settings.tsx:21-23 — same correct guard. Good.",
+    "auth.tsx exposes `loading` via AuthCtx (line 8, provider value at line 107). No new plumbing was needed and the fix reuses the existing state correctly."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only retest)", "frontend": "100% (6/6 assertions on the targeted flows passed)"},
+  "seed_data_creation": "One ephemeral user created via UI /register: iter5b+<epoch>@fiskid.it / password123 / PIN 123456.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter6 confirmed both (a) the iter4 HIGH /lock signOut bug is fixed (tap lock-signout → /welcome, headline visible) and (b) the iter5 loading-race regression is gone (goto /settings, goto /set-pin, and reload on /lock with a valid token all stay on target and no longer bounce to /welcome). If a follow-up run is needed, reuse these testIDs: welcome-register-button, register-email-input, register-password-input, register-confirm-input, register-submit-button, onboarding-skip, edit-back, setpin-back, pin-key-{0..9}, pin-key-back, settings-lock-now, lock-signout, welcome-login-link, login-email-input, login-password-input, login-submit-button. On Expo Web dev, use page.goto(<absolute URL>) to force a fresh navigation for the loading-race checks.",
+  "rca_of_issue": "Original iter4 bug: tapping 'Esci e usa un altro account' on /lock called signOut() (clears token+user+unlocked) but did NOT trigger navigation, so the user stayed on /lock. Iter5 fix added `useEffect(() => { if (!token) router.replace('/welcome') }, [token])` on /lock, /set-pin, /settings — this fixed signOut BUT fired during AuthProvider's initial-mount window (token=null, loading=true before AsyncStorage rehydration), redirecting valid-session users to /welcome on any reload/goto. Iter5b fix (verified here) adds `loading` from useAuth() and gates with `!loading && !token`, so the effect no longer fires during rehydration but still fires after signOut (loading=false at that point, token becomes null → redirect fires). All 6 targeted scenarios now behave correctly."
+}

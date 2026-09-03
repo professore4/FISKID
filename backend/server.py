@@ -91,6 +91,12 @@ class Credentials(BaseModel):
     password: str = Field(min_length=8, max_length=128)
 
 
+class LoginIn(BaseModel):
+    identifier: Optional[str] = Field(default=None, description="Email, VAT number or tax code")
+    email: Optional[str] = None  # backward compat
+    password: str = Field(min_length=8, max_length=128)
+
+
 class ResetRequest(BaseModel):
     email: EmailStr
 
@@ -378,15 +384,47 @@ async def register(body: Credentials):
 
 
 @api_router.post("/auth/login", response_model=TokenResponse)
-async def login(body: Credentials):
-    email = normalize_email(str(body.email))
-    user = await users.find_one({"email": email})
-    valid = await verify_password(body.password, user["password_hash"] if user else DUMMY_HASH)
+async def login(body: LoginIn):
+    raw = (body.identifier or body.email or "").strip()
+    if not raw:
+        raise HTTPException(status_code=422, detail="Fornire email, partita IVA o codice fiscale")
+
+    user = await resolve_user_by_identifier(raw)
+    hashed = user["password_hash"] if user else DUMMY_HASH
+    valid = await verify_password(body.password, hashed)
     if not user or not valid:
-        raise HTTPException(status_code=401, detail="Email o password non corretti")
+        raise HTTPException(status_code=401, detail="Credenziali non corrette")
     # Late-linking safety: if invitations arrived after registration, hook them up.
-    await resolve_pending_invitations(user["_id"], email)
+    await resolve_pending_invitations(user["_id"], user["email"])
     return {"access_token": create_access_token(str(user["_id"])), "token_type": "bearer"}
+
+
+async def resolve_user_by_identifier(ident: str):
+    """Match email OR active fiscal_profile VAT/tax_code and return the owning user."""
+    ident = ident.strip()
+    if not ident:
+        return None
+    # Email
+    if "@" in ident:
+        return await users.find_one({"email": ident.lower()})
+    # VAT (exactly 11 digits)
+    if VAT_RE.match(ident):
+        p = await fiscal_profiles.find_one({
+            "vat_number": ident,
+            "deleted_at": {"$exists": False},
+        })
+        if p:
+            return await users.find_one({"_id": p["user_id"]})
+    # Tax code (16 alphanumeric)
+    up = ident.upper()
+    if CF_RE.match(up):
+        p = await fiscal_profiles.find_one({
+            "tax_code": up,
+            "deleted_at": {"$exists": False},
+        })
+        if p:
+            return await users.find_one({"_id": p["user_id"]})
+    return None
 
 
 @api_router.post("/auth/logout")

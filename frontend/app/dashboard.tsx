@@ -98,9 +98,18 @@ export default function Dashboard() {
           <Text style={styles.hi}>Ciao</Text>
           <Text style={styles.email} numberOfLines={1}>{user?.email}</Text>
         </View>
-        <Pressable testID="dashboard-logout" onPress={signOut} style={styles.logoutBtn}>
-          <Text style={styles.logoutText}>Esci</Text>
-        </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.xs }}>
+          <Pressable
+            testID="dashboard-settings"
+            onPress={() => router.push("/settings")}
+            style={styles.logoutBtn}
+          >
+            <Text style={styles.logoutText}>⚙︎</Text>
+          </Pressable>
+          <Pressable testID="dashboard-logout" onPress={signOut} style={styles.logoutBtn}>
+            <Text style={styles.logoutText}>Esci</Text>
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView

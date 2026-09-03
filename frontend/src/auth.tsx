@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { apiLogin, apiMe, apiRegister, tokenStorage } from "./api";
+import { pinLock } from "./lock";
 
 type User = { id: string; email: string } | null;
 
@@ -7,10 +8,15 @@ type AuthCtx = {
   token: string | null;
   user: User;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  hasPin: boolean;
+  unlocked: boolean;
+  signIn: (identifier: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
+  markUnlocked: () => void;
+  requireLock: () => void;
+  refreshLockState: () => Promise<void>;
 };
 
 const Ctx = createContext<AuthCtx | null>(null);
@@ -19,6 +25,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<User>(null);
   const [loading, setLoading] = useState(true);
+  const [hasPin, setHasPin] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
+
+  const refreshLockState = useCallback(async () => {
+    const enabled = await pinLock.isEnabled();
+    setHasPin(enabled);
+    if (!enabled) setUnlocked(true); // no pin set → app effectively unlocked
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -29,13 +43,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setToken(t);
           setUser(u);
         }
+        await refreshLockState();
       } catch {
         await tokenStorage.clear();
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [refreshLockState]);
 
   const establish = useCallback(async (t: string) => {
     await tokenStorage.set(t);
@@ -45,9 +60,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = useCallback(
-    async (email: string, password: string) => {
-      const res = await apiLogin(email, password);
+    async (identifier: string, password: string) => {
+      const res = await apiLogin(identifier, password);
       await establish(res.access_token);
+      // Fresh login always requires unlock again if a PIN is configured
+      const enabled = await pinLock.isEnabled();
+      setHasPin(enabled);
+      setUnlocked(!enabled);
     },
     [establish],
   );
@@ -56,6 +75,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (email: string, password: string) => {
       const res = await apiRegister(email, password);
       await establish(res.access_token);
+      // New account never has a PIN yet
+      setHasPin(false);
+      setUnlocked(true);
     },
     [establish],
   );
@@ -64,6 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await tokenStorage.clear();
     setToken(null);
     setUser(null);
+    setUnlocked(false);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -76,8 +99,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [token, signOut]);
 
+  const markUnlocked = useCallback(() => setUnlocked(true), []);
+  const requireLock = useCallback(() => setUnlocked(false), []);
+
   return (
-    <Ctx.Provider value={{ token, user, loading, signIn, signUp, signOut, refresh }}>
+    <Ctx.Provider value={{
+      token, user, loading, hasPin, unlocked,
+      signIn, signUp, signOut, refresh,
+      markUnlocked, requireLock, refreshLockState,
+    }}>
       {children}
     </Ctx.Provider>
   );

@@ -59,10 +59,10 @@ export const apiRegister = (email: string, password: string) =>
     body: JSON.stringify({ email, password }),
   });
 
-export const apiLogin = (email: string, password: string) =>
+export const apiLogin = (identifier: string, password: string) =>
   apiRequest<{ access_token: string }>("/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ identifier, password }),
   });
 
 export const apiMe = (token: string) =>
