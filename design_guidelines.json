@@ -1,0 +1,188 @@
+{
+  "app_name": "FiskID",
+  "personality": "6 Glass / Luxe DARK",
+  "personality_one_liner": "A highly secure, cinematic digital vault that turns tedious tax data into a premium, frictionless Apple Wallet-style identity card.",
+  "color": {
+    "surface": "#050505",
+    "onSurface": "#FFFFFF",
+    "surfaceSecondary": "#141414",
+    "onSurfaceSecondary": "#E0E0E0",
+    "surfaceTertiary": "#222222",
+    "onSurfaceTertiary": "#CCCCCC",
+    "surfaceInverse": "#FFFFFF",
+    "onSurfaceInverse": "#000000",
+    "brand": "#059669",
+    "brandPrimary": "#059669",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#10B981",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#064E3B",
+    "onBrandTertiary": "#D1FAE5",
+    "success": "#059669",
+    "onSuccess": "#FFFFFF",
+    "warning": "#D97706",
+    "onWarning": "#FFFFFF",
+    "error": "#DC2626",
+    "onError": "#FFFFFF",
+    "info": "#141414",
+    "onInfo": "#FFFFFF",
+    "border": "#2A2A2A",
+    "borderStrong": "#404040",
+    "divider": "#1F1F1F"
+  },
+  "typography": {
+    "displayFontFamily": "Fraunces",
+    "textFontFamily": "Satoshi",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous cinematic spacing. Use lg and xl for breathing room around the main card. No cramped elements.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "stack_only",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use heavy blur (expo-blur) over translucent surfaceSecondary for sticky headers, bottom sheets, and the main card reflection",
+      "Ensure text on glass is fully readable by adding a tinted underlay (≥75% opacity)"
+    ],
+    "dont's": [
+      "Do not apply glass to form fields or body text regions",
+      "Do not use cheap glossy gradients, rely on blur over texture"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Welcome & Auth",
+      "purpose": "Introduce the app's premium vibe and handle login/registration seamlessly.",
+      "states": {
+        "loading": "Centered sleek spinner",
+        "empty": "N/A",
+        "error": "Inline text or toast"
+      },
+      "layout": "Full-bleed abstract premium dark metal image background with a vertical gradient scrim (transparent to 80% surface at bottom). Massive display serif typography. Bottom-anchored glass card for Auth form (Email/Pass + CTA)."
+    },
+    {
+      "name": "Onboarding",
+      "purpose": "Communicate the core value: 'Mai più comunicare a voce i tuoi dati fiscali.'",
+      "states": {
+        "loading": "N/A",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Carousel with cinematic imagery and serif headlines. Sticky bottom CTA 'Start' over a frosted glass bar."
+    },
+    {
+      "name": "Dashboard",
+      "purpose": "The core minimalist hub showcasing the digital Fiscal Identity Card.",
+      "states": {
+        "loading": "Skeleton of the card",
+        "empty": "Ghost card outlining where the identity card will be, prompting setup",
+        "error": "Error toast with retry"
+      },
+      "layout": "Minimalist dark canvas. Top greeting. The absolute hero is a large Apple Wallet-styled 'Fiscal Identity Card' centered on screen. The card uses a premium metal texture background, glassmorphism overlays for text legibility, and displays key data cleanly. Below the card: a row of glass action buttons (Share, Scan, Edit)."
+    },
+    {
+      "name": "FiscalProfileForm",
+      "purpose": "Collect tax and identity data without feeling like a bureaucratic form.",
+      "states": {
+        "loading": "Subtle loading state on save CTA",
+        "empty": "N/A",
+        "error": "Inline validation in red"
+      },
+      "layout": "Single-column scrollable list of inputs grouped into sections (Anagrafica, Dati Fiscali). Floating labels. Sticky glass bottom bar with 'Save' CTA."
+    },
+    {
+      "name": "ShareScreen",
+      "purpose": "Generate and display the secure QR code for sharing data.",
+      "states": {
+        "loading": "Blurred QR skeleton",
+        "empty": "N/A",
+        "error": "Retry generating token"
+      },
+      "layout": "Presented as a modal bottom sheet or full screen overlay. The QR code must be on a high-contrast white card (`surfaceInverse`) to ensure scanability by all cameras. Below it, clear share actions (Copy Link, Share via OS)."
+    },
+    {
+      "name": "Scanner",
+      "purpose": "In-app QR scanner for operators to quickly capture fiscal data.",
+      "states": {
+        "loading": "Processing state over viewfinder",
+        "empty": "N/A",
+        "error": "Toast for invalid QR"
+      },
+      "layout": "Full-screen camera viewfinder. A high-contrast central reticle/frame. Segmented control at the bottom to switch between 'Scan' and 'My Card'."
+    },
+    {
+      "name": "PublicSharePage",
+      "purpose": "Clean read-only view of the shared fiscal data (accessed via QR).",
+      "states": {
+        "loading": "Skeleton of data list",
+        "empty": "Expired token message",
+        "error": "Invalid token error"
+      },
+      "layout": "Clean, structured list of data rows (Label + Value). 'Conferma acquisizione dati' sticky primary CTA."
+    },
+    {
+      "name": "ShareHistory",
+      "purpose": "Track when and with whom data was shared.",
+      "states": {
+        "loading": "List skeleton",
+        "empty": "Empty state illustration + 'No shares yet'",
+        "error": "Retry loading list"
+      },
+      "layout": "Simple chronological list of sharing events. Each row has a glass background on press."
+    }
+  ],
+  "images": {
+    "card_background": {
+      "url": "https://images.unsplash.com/photo-1635151227785-429f420c6b9d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwzfHxhYnN0cmFjdCUyMGRhcmslMjBtZXRhbCUyMHRleHR1cmUlMjBwcmVtaXVtfGVufDB8fHx8MTc4ODQzMDE2MXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Premium abstract dark metal texture"
+    },
+    "welcome_background": {
+      "url": "https://images.unsplash.com/photo-1711025372958-db48a4fe0ba1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGdyZWVuJTIwbGlnaHQlMjBkYXJrJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3ODg0MzAxNjF8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Abstract black and emerald green waves"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the 6 Glass / Luxe DARK personality. Do not use random gray shades; stick to the defined deep obsidian and emerald palette.",
+    "Implement the 'Fiscal Identity Card' using the provided 'card_background' image wrapped in `expo-image`, overlaid with a vertical linear gradient (transparent to dark) and glassmorphism elements to ensure text remains highly legible.",
+    "Avoid making the app look like a typical boring tax utility; it must feel like a premium fintech product (e.g., Apple Card or Revolut Metal). Use Fraunces for display headings.",
+    "QR codes must be placed on a surfaceInverse (white) background regardless of dark mode, as cameras struggle to scan inverted QR codes.",
+    "Do NOT use any blue, indigo, or purple colors anywhere in the app. Emerald green is our primary brand accent.",
+    "For the scanner screen, use `expo-camera` or `react-native-vision-camera` taking up the full screen with absolute positioned UI (reticle, bottom controls) layered on top.",
+    "Ensure all interactive elements have subtle scale animations on press (haptics + 0.98 scale down).",
+    "Use a gradient scrim (top to bottom fade) over background images to guarantee contrast for text overlay."
+  ]
+}

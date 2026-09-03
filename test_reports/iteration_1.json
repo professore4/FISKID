@@ -1,0 +1,31 @@
+{
+  "summary": "First testing pass for FiskID MVP. Backend: 23/23 pytest tests PASSED covering register/login/me/forgot/reset/fiscal-profile validation/upsert/shares/public-share/confirm/revoke/invalid-token. Frontend: full flow works end-to-end on Expo web preview at mobile viewport 390x844 — register → onboarding → fiscal-profile/edit → dashboard shows 'Mario Rossi' + 'Privato' + 'Condividi dati fiscali'; /card shows sections and sticky share button; /share shows QR + share URL + Copia link + Genera nuovo QR; /share/{token} unauthenticated shows fiscal data + Copia tutti + Conferma acquisizione (all present).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global", "issues": ["Console warnings (non-blocking): 'shadow*' style props deprecated, use boxShadow; props.pointerEvents deprecated, use style.pointerEvents; Animated useNativeDriver not supported on web (RCTAnimation missing) - falls back to JS animation."]},
+      {"screen": "onboarding", "issues": ["'Salta' text button was not directly click-reachable by page.get_by_text('Salta') on first pass (worked via direct navigation). testID for skip button would help; also on first register attempt a stray 'GO_BACK action was not handled by any navigator' console error appeared — indicates a router back call with no history. Non-blocking."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_fiskid_api.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(Optional) Add testID='onboarding-skip' and 'onboarding-continue' on the onboarding step buttons for easier automation.",
+    "(Optional) Guard router.back() on register/login screens to avoid the 'GO_BACK was not handled' warning when user lands directly on /register."
+  ],
+  "critical_code_review_comments": [
+    "server.py cleanly returns 'id' string and excludes _id/user_id from public/private profile responses (verified in tests).",
+    "Login returns generic 401 for both unknown email and wrong password (uses DUMMY_HASH to prevent user-enumeration timing) — good.",
+    "forgot-password returns dev_reset_token only when user exists in dev mode; response message is generic — matches requirement.",
+    "Fiscal profile is properly upserted (one document per user, unique index on user_id)."
+  ],
+  "updated_files": ["/app/backend/tests/test_fiskid_api.py (created)"],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "~95% (all specified screens & core flows verified)"},
+  "seed_data_creation": "Fresh users created dynamically: tester+<ts>@fiskid.it / password123 (backend pytest suite) and separate fresh user in frontend Playwright run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Frontend testIDs of interest: register-{email-input,password-input,confirm-input,submit-button}; entity-{individual,professional,company}; input-{first-name,last-name,cf,recipient,pec,address,street-number,cap,city,province,country,email,phone}; edit-save-button. Note tax-code testID is 'input-cf' (not 'input-tax-code') and CAP is 'input-cap'. Public share URL pattern: /share/{token}. Test backend BASE via EXPO_PUBLIC_BACKEND_URL.",
+  "rca_of_issue": "N/A — no bugs found blocking the reviewed features."
+}
