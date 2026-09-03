@@ -56,19 +56,19 @@ export default function Onboarding() {
         ))}
       </View>
 
-      <Pressable
-        testID="onboarding-skip"
-        onPress={() => router.replace("/fiscal-profile/edit")}
-        style={styles.skip}
-      >
-        <Text style={styles.skipText}>Salta</Text>
-      </Pressable>
-
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.eyebrow}>{current.eyebrow}</Text>
         <Text style={styles.title}>{current.title}</Text>
         <Text style={styles.body}>{current.body}</Text>
       </ScrollView>
+
+      <Pressable
+        testID="onboarding-skip"
+        onPress={() => router.replace("/fiscal-profile/edit")}
+        style={[styles.skip, { top: insets.top + spacing.md }]}
+      >
+        <Text style={styles.skipText}>Salta</Text>
+      </Pressable>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.xl }]}>
         <AppButton

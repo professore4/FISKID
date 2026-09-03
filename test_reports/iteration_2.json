@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 2 focused on the two new features: Multi Identità (multiple fiscal profiles per user) and Wallet Pass (Apple .pkpass + Google Wallet save link). Backend: 23/23 NEW pytest tests PASSED (create first profile auto-default; second is_default=false; validation 422; list/get/put/set-default/soft-delete; ownership isolation 404 for other user's id and for invalid ObjectId; shares with fiscal_profile_id returns profile_id + profile_label; empty body uses default; unowned id → 404; public share has NO leak of _id/user_id/label/is_default; wallet-tokens returns apple_url+google_url+note; Apple pkpass is a valid ZIP with pass.json/manifest.json/signature/icon.png/icon@2x.png/logo.png/logo@2x.png and pass.json has formatVersion=1 and passTypeIdentifier; invalid apple jwt → 404; Google returns 302 to https://pay.google.com/gp/v/save/... with invalid → 404; legacy singular POST /fiscal-profile still upserts; legacy GET /fiscal-profile returns default). Iteration-1 suite still passes 23/23 (46/46 combined). Frontend: register → onboarding-skip → 1st profile (Personale, individual) → dashboard (no chip switcher with 1 profile) → +Aggiungi → 2nd profile (Azienda, company) → 2 chips render with default dot on first → clicking Azienda chip updates hero to 'ACME srl' + masked VAT '•• •• •• •• 901' → 'Imposta come identità predefinita' pill appears → clicking it moves default dot to Azienda (toast confirmed) → /card shows both 'Aggiungi a Apple Wallet' and 'Aggiungi a Google Wallet' buttons and neither crashes on click (Linking.openURL) → /share shows 'Identità: Azienda' badge, QR encodes a full /share/{token} URL, public route opens showing correct ACME srl fiscal data. One React Native Web console error surfaced on public share screen ('Unexpected text node: . A text node cannot be a child of a <View>.') visible as toast to user.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "public /share/{token} route", "issue": "React Native Web console error 'Unexpected text node: . A text node cannot be a child of a <View>.' is emitted and is visible to end users as an error toast (see /tmp/public_share.png bottom-left). Probably an unwrapped whitespace/string next to a component inside a <View>. Search public-share screen for a stray '{something && ...}' or ' ' between JSX children.", "testID": "n/a", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global", "issues": ["Same pre-existing deprecation warnings from iter1 (shadow* props, pointerEvents, useNativeDriver on web). Non-blocking."]},
+      {"screen": "dashboard", "issues": ["HMR-duplicated 'dashboard-view-card' / 'dashboard-edit-profile' DOM nodes on Expo Web dev preview after multiple back/forward navigations. Test harnesses must use .first() — expected by main agent."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_multi_identity_wallet.py",
+    "/app/backend/tests/test_fiskid_api.py",
+    "/app/test_reports/pytest/pytest_iter2.xml",
+    "/app/test_reports/pytest/pytest_iter2_all.xml"
+  ],
+  "action_items": [
+    "(Optional low priority) Investigate stray text node on the public share screen (/app/frontend/app/share/[token].tsx or similar) — RN Web logs it as an error and it is user-visible as a toast. Likely a stray '{value && '...'}' branch returning a bare string next to Views, or a space/newline expression inside a <View>.",
+    "(Nice to have) Ensure toast component filters out RN devtools warnings so console errors don't surface as user-facing toasts."
+  ],
+  "critical_code_review_comments": [
+    "server.py: profile_to_public() correctly excludes id/label/is_default/_id/user_id — verified end-to-end.",
+    "server.py: DELETE /fiscal-profiles/{id} correctly soft-deletes, revokes associated shares (is_active=false), and promotes another profile to default when the deleted one was default — verified.",
+    "server.py: POST /shares response now includes profile_id and profile_label; empty body defaults to is_default=true profile (fallback to oldest). Good.",
+    "server.py: _wallet_load raises 404 on any decode/lookup failure — proper generic error, no leak.",
+    "server.py: Apple .pkpass zip contains required files with SHA-1 manifest; signature is empty by design (documented as MVP preview). This is expected until real Apple cert is plugged in.",
+    "server.py: Google Wallet uses HS256 (JWT_SECRET) as a placeholder; Google will reject until service account + RS256 — documented in the 'note' field."
+  ],
+  "updated_files": ["/app/backend/tests/test_multi_identity_wallet.py (new)"],
+  "success_rate": {"backend": "100% (23/23 new + 23/23 iter1 = 46/46)", "frontend": "~98% (all specified new-feature flows verified: multi-chip, set-default, wallet buttons, share badge, public share; delete-button visibility not re-verified in second pass because of HMR-duplicated dashboard nodes — but code in /app/frontend/app/fiscal-profile/edit.tsx line 241 correctly renders testID='edit-delete-button' with 'Elimina questa identità' text when id param is present)"},
+  "seed_data_creation": "Registered ephemeral users per test run: multi_a+<ts>@fiskid.it, multi_b+<ts>@fiskid.it (backend pytest) and tester+<ts>@fiskid.it (frontend Playwright). Created two fiscal profiles (Personale/Individual + Azienda/Company) for the Playwright user.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend suite is deterministic when run with -n 0 (serial) because both test modules share module-scoped STATE and use time-based emails. If run under the default xdist -n 2 --dist loadscope with the two modules on separate workers, they still pass because each module has independent state. For frontend testing, always use .first() on 'dashboard-view-card' and 'dashboard-edit-profile' because Expo Web dev HMR duplicates these DOM nodes across navigations. Public share URL pattern remains /share/{token}. Wallet feature is a preview MVP — the note field in wallet-tokens response explicitly says Apple pass is unsigned and Google JWT is placeholder — testing should NOT expect these to actually install on device.",
+  "rca_of_issue": "N/A — no blocking bugs found. Only cosmetic RN Web warning surfacing as toast on public share screen (medium priority)."
+}

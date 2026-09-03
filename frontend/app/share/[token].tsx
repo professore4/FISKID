@@ -31,7 +31,9 @@ const Row = ({
       <Text style={styles.rowValue} numberOfLines={2}>
         {value || "—"}
       </Text>
-      {copyable && value && <Text style={styles.copyHint}>Tocca per copiare</Text>}
+      {copyable && value ? (
+        <Text style={styles.copyHint}>Tocca per copiare</Text>
+      ) : null}
     </Pressable>
   </View>
 );

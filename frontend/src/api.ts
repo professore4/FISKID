@@ -23,8 +23,6 @@ const BASE = process.env.EXPO_PUBLIC_BACKEND_URL as string;
 export const API_BASE = `${BASE}/api`;
 export const APP_BASE_URL = BASE;
 
-export type ApiError = { detail?: any };
-
 export async function apiRequest<T = any>(
   path: string,
   init: RequestInit = {},
@@ -54,7 +52,7 @@ export async function apiRequest<T = any>(
   return data;
 }
 
-// Auth
+// -------- Auth --------
 export const apiRegister = (email: string, password: string) =>
   apiRequest<{ access_token: string }>("/auth/register", {
     method: "POST",
@@ -82,9 +80,11 @@ export const apiResetPassword = (token: string, new_password: string) =>
     body: JSON.stringify({ token, new_password }),
   });
 
-// Fiscal profile
+// -------- Fiscal profile (multi) --------
 export type FiscalProfile = {
   id?: string;
+  label?: string | null;
+  is_default?: boolean;
   entity_type: "individual" | "professional" | "company";
   first_name?: string | null;
   last_name?: string | null;
@@ -103,28 +103,76 @@ export type FiscalProfile = {
   contact_phone?: string | null;
 };
 
-export const apiGetProfile = (token: string) =>
+export const apiListProfiles = (token: string) =>
+  apiRequest<{ profiles: FiscalProfile[] }>("/fiscal-profiles", {}, token);
+
+export const apiGetProfile = (token: string, id: string) =>
+  apiRequest<{ profile: FiscalProfile }>(`/fiscal-profiles/${id}`, {}, token);
+
+// legacy singular getter — returns the default profile (or null)
+export const apiGetDefaultProfile = (token: string) =>
   apiRequest<{ profile: FiscalProfile | null }>("/fiscal-profile", {}, token);
 
-export const apiSaveProfile = (token: string, payload: FiscalProfile) =>
+export const apiCreateProfile = (token: string, payload: FiscalProfile) =>
   apiRequest<{ profile: FiscalProfile }>(
-    "/fiscal-profile",
+    "/fiscal-profiles",
     { method: "POST", body: JSON.stringify(payload) },
     token,
   );
 
-// Shares
-export const apiCreateShare = (token: string) =>
-  apiRequest<{ token: string; created_at: string }>(
-    "/shares",
+export const apiUpdateProfile = (token: string, id: string, payload: FiscalProfile) =>
+  apiRequest<{ profile: FiscalProfile }>(
+    `/fiscal-profiles/${id}`,
+    { method: "PUT", body: JSON.stringify(payload) },
+    token,
+  );
+
+export const apiSetDefaultProfile = (token: string, id: string) =>
+  apiRequest<{ ok: true }>(
+    `/fiscal-profiles/${id}/set-default`,
     { method: "POST" },
+    token,
+  );
+
+export const apiDeleteProfile = (token: string, id: string) =>
+  apiRequest<{ ok: true }>(
+    `/fiscal-profiles/${id}`,
+    { method: "DELETE" },
+    token,
+  );
+
+// -------- Wallet --------
+export const apiWalletTokens = (token: string, profileId: string) =>
+  apiRequest<{ apple_url: string; google_url: string; note: string }>(
+    `/fiscal-profiles/${profileId}/wallet-tokens`,
+    { method: "POST" },
+    token,
+  );
+
+export const walletFullUrl = (path: string) => `${APP_BASE_URL}${path}`;
+
+// -------- Shares --------
+export const apiCreateShare = (token: string, profileId?: string | null) =>
+  apiRequest<{ token: string; created_at: string; profile_id: string; profile_label: string | null }>(
+    "/shares",
+    {
+      method: "POST",
+      body: JSON.stringify(profileId ? { fiscal_profile_id: profileId } : {}),
+    },
     token,
   );
 
 export const apiShareHistory = (token: string) =>
   apiRequest<{ shares: any[] }>("/shares/history", {}, token);
 
-// Public share (no auth)
+export const apiRevokeShare = (token: string, shareToken: string) =>
+  apiRequest<{ ok: true }>(
+    `/shares/${shareToken}/revoke`,
+    { method: "POST" },
+    token,
+  );
+
+// -------- Public share (no auth) --------
 export const apiPublicShareGet = (shareToken: string) =>
   apiRequest<{ profile: any; confirmed_at: string | null }>(
     `/public/share/${shareToken}`,
@@ -136,7 +184,7 @@ export const apiPublicShareConfirm = (shareToken: string) =>
     { method: "POST", body: JSON.stringify({}) },
   );
 
-// Events
+// -------- Events --------
 export const apiTrackEvent = (
   event_name: string,
   event_metadata: Record<string, any> = {},

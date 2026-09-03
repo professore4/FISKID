@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Linking } from "react-native";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppButton } from "../src/components/AppButton";
 import {
@@ -9,41 +9,76 @@ import {
   getEntityLabel,
   maskVat,
 } from "../src/components/FiscalIdentityCard";
-import { apiGetProfile, FiscalProfile } from "../src/api";
+import { useToast } from "../src/components/Toast";
+import {
+  apiGetDefaultProfile,
+  apiGetProfile,
+  apiWalletTokens,
+  FiscalProfile,
+  walletFullUrl,
+} from "../src/api";
 import { useAuth } from "../src/auth";
 import { colors, spacing, type } from "../src/theme";
 
 const Row = ({ label, value }: { label: string; value?: string | null }) => (
   <View style={styles.row}>
     <Text style={styles.rowLabel}>{label}</Text>
-    <Text style={styles.rowValue} numberOfLines={2}>
-      {value || "—"}
-    </Text>
+    <Text style={styles.rowValue} numberOfLines={2}>{value || "—"}</Text>
   </View>
 );
 
 export default function Card() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { id } = useLocalSearchParams<{ id?: string }>();
   const { token } = useAuth();
+  const toast = useToast();
   const [profile, setProfile] = useState<FiscalProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [walletLoading, setWalletLoading] = useState(false);
 
   const load = useCallback(async () => {
     if (!token) return;
     try {
-      const r = await apiGetProfile(token);
-      setProfile(r.profile);
+      if (id) {
+        const r = await apiGetProfile(token, id);
+        setProfile(r.profile);
+      } else {
+        const r = await apiGetDefaultProfile(token);
+        setProfile(r.profile);
+      }
+    } catch (e: any) {
+      toast.show(e.detail || "Errore caricamento", "error");
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, id, toast]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  if (loading) {
-    return <View style={styles.center}><ActivityIndicator color={colors.brandSecondary} /></View>;
-  }
+  const openWallet = async (kind: "apple" | "google") => {
+    if (!profile?.id || !token) return;
+    setWalletLoading(true);
+    try {
+      const r = await apiWalletTokens(token, profile.id);
+      const url = walletFullUrl(kind === "apple" ? r.apple_url : r.google_url);
+      const supported = await Linking.canOpenURL(url).catch(() => true);
+      if (!supported) throw new Error("Non è possibile aprire il link su questo dispositivo.");
+      await Linking.openURL(url);
+      toast.show(
+        kind === "apple"
+          ? "Apple Wallet: pass MVP non firmato (serve certificato Apple)"
+          : "Google Wallet: link generato (serve service account Google)",
+        "info",
+      );
+    } catch (e: any) {
+      toast.show(e.detail || e.message || "Errore Wallet", "error");
+    } finally {
+      setWalletLoading(false);
+    }
+  };
+
+  if (loading) return <View style={styles.center}><ActivityIndicator color={colors.brandSecondary} /></View>;
 
   if (!profile) {
     return (
@@ -59,22 +94,39 @@ export default function Card() {
   return (
     <View style={[styles.root, { paddingTop: insets.top + spacing.md }]}>
       <View style={styles.header}>
-        <Pressable testID="card-back" onPress={() => router.back()} style={{ padding: spacing.sm }}>
+        <Pressable testID="card-back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/dashboard"))} style={{ padding: spacing.sm }}>
           <Text style={styles.backText}>‹  Indietro</Text>
         </Pressable>
-        <Text style={styles.headerTitle}>Fiscal Identity Card</Text>
+        <Text style={styles.headerTitle}>{profile.label || "Fiscal Identity Card"}</Text>
         <View style={{ width: 90 }} />
       </View>
 
-      <ScrollView
-        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: insets.bottom + 120, gap: spacing.lg }}
-      >
+      <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: insets.bottom + 120, gap: spacing.lg }}>
         <FiscalIdentityCard
           testID="card-hero"
           displayName={getDisplayName(profile)}
           entityLabel={getEntityLabel(profile.entity_type)}
           vatMasked={maskVat(profile.vat_number)}
         />
+
+        <View style={styles.walletRow}>
+          <Pressable
+            testID="add-apple-wallet"
+            onPress={() => openWallet("apple")}
+            disabled={walletLoading}
+            style={[styles.walletBtn, { backgroundColor: "#000", borderColor: "#333" }]}
+          >
+            <Text style={styles.walletBtnText}>  Aggiungi a Apple Wallet</Text>
+          </Pressable>
+          <Pressable
+            testID="add-google-wallet"
+            onPress={() => openWallet("google")}
+            disabled={walletLoading}
+            style={[styles.walletBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+          >
+            <Text style={styles.walletBtnText}>G  Aggiungi a Google Wallet</Text>
+          </Pressable>
+        </View>
 
         <View style={styles.detailBox}>
           <Text style={styles.section}>Anagrafica</Text>
@@ -117,7 +169,7 @@ export default function Card() {
         <AppButton
           testID="card-share-button"
           title="Condividi dati fiscali"
-          onPress={() => router.push("/share")}
+          onPress={() => router.push({ pathname: "/share", params: { id: profile.id! } })}
         />
       </View>
     </View>
@@ -128,46 +180,34 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.surface },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
   header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.md,
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    paddingHorizontal: spacing.lg, paddingBottom: spacing.md,
   },
-  headerTitle: { color: colors.onSurface, fontSize: 15, fontWeight: "700", letterSpacing: 0.5 },
+  headerTitle: { color: colors.onSurface, fontSize: 15, fontWeight: "700", letterSpacing: 0.5, flex: 1, textAlign: "center" },
   backText: { color: colors.onSurfaceSecondary, fontSize: 15 },
+  walletRow: { flexDirection: "row", gap: spacing.sm },
+  walletBtn: {
+    flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1,
+    alignItems: "center", justifyContent: "center",
+  },
+  walletBtnText: { color: colors.onSurface, fontSize: 13, fontWeight: "700" },
   detailBox: {
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: 20,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: colors.surfaceSecondary, borderRadius: 20,
+    padding: spacing.lg, borderWidth: 1, borderColor: colors.border,
   },
   section: {
-    color: colors.brandSecondary,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1.5,
-    textTransform: "uppercase",
-    marginBottom: spacing.md,
+    color: colors.brandSecondary, fontSize: 11, fontWeight: "700",
+    letterSpacing: 1.5, textTransform: "uppercase", marginBottom: spacing.md,
   },
   row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    paddingVertical: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.divider,
-    gap: spacing.md,
+    flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start",
+    paddingVertical: spacing.sm, borderTopWidth: 1, borderTopColor: colors.divider, gap: spacing.md,
   },
   rowLabel: { ...type.small, color: colors.muted, flex: 1 },
   rowValue: { color: colors.onSurface, fontSize: 14, fontWeight: "600", textAlign: "right", flex: 1.4, flexShrink: 1 },
   footer: {
-    position: "absolute",
-    bottom: 0, left: 0, right: 0,
-    padding: spacing.lg,
-    backgroundColor: "rgba(5,5,5,0.95)",
-    borderTopWidth: 1,
-    borderTopColor: colors.divider,
+    position: "absolute", bottom: 0, left: 0, right: 0,
+    padding: spacing.lg, backgroundColor: "rgba(5,5,5,0.95)",
+    borderTopWidth: 1, borderTopColor: colors.divider,
   },
 });

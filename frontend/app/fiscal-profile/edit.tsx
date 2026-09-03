@@ -9,18 +9,26 @@ import {
   Pressable,
   ActivityIndicator,
 } from "react-native";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppButton } from "../../src/components/AppButton";
 import { AppInput } from "../../src/components/AppInput";
 import { useToast } from "../../src/components/Toast";
-import { apiGetProfile, apiSaveProfile, apiTrackEvent, FiscalProfile } from "../../src/api";
+import {
+  apiCreateProfile,
+  apiDeleteProfile,
+  apiGetProfile,
+  apiTrackEvent,
+  apiUpdateProfile,
+  FiscalProfile,
+} from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, type, font } from "../../src/theme";
 
 type EntityType = "individual" | "professional" | "company";
 
 const initial: FiscalProfile = {
+  label: "",
   entity_type: "individual",
   first_name: "",
   last_name: "",
@@ -42,58 +50,68 @@ const initial: FiscalProfile = {
 export default function EditFiscalProfile() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { id } = useLocalSearchParams<{ id?: string }>();
   const { token, user } = useAuth();
   const toast = useToast();
+  const isNew = !id;
   const [profile, setProfile] = useState<FiscalProfile>({
     ...initial,
     contact_email: user?.email || "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [isNew, setIsNew] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [loading, setLoading] = useState(!isNew);
 
   const load = useCallback(async () => {
-    if (!token) return;
+    if (!token || !id) return;
+    setLoading(true);
     try {
-      const r = await apiGetProfile(token);
-      if (r.profile) {
-        setProfile({ ...initial, ...r.profile });
-        setIsNew(false);
-      } else {
-        apiTrackEvent("fiscal_profile_started");
-      }
+      const r = await apiGetProfile(token, id);
+      setProfile({ ...initial, ...r.profile });
     } catch (e: any) {
       toast.show(e.detail || "Errore caricamento", "error");
+      router.back();
     } finally {
       setLoading(false);
     }
-  }, [token, toast]);
+  }, [token, id, toast, router]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    if (isNew) apiTrackEvent("fiscal_profile_started");
+    else load();
+  }, [isNew, load]));
 
   const set = (k: keyof FiscalProfile) => (v: string) =>
     setProfile((p) => ({ ...p, [k]: v }));
 
+  const buildPayload = (): FiscalProfile => ({
+    ...profile,
+    tax_code: profile.tax_code ? profile.tax_code.trim().toUpperCase() : null,
+    vat_number: profile.vat_number ? profile.vat_number.trim() : null,
+    recipient_code: profile.recipient_code ? profile.recipient_code.trim().toUpperCase() : null,
+    pec: profile.pec ? profile.pec.trim() : null,
+    contact_email: profile.contact_email.trim(),
+    address: profile.address.trim(),
+    city: profile.city.trim(),
+    province: profile.province.trim().toUpperCase(),
+    postal_code: profile.postal_code.trim(),
+    label: profile.label?.trim() || null,
+  });
+
   const onSubmit = async () => {
     if (!token) return;
-    const payload: FiscalProfile = {
-      ...profile,
-      tax_code: profile.tax_code ? profile.tax_code.trim().toUpperCase() : null,
-      vat_number: profile.vat_number ? profile.vat_number.trim() : null,
-      recipient_code: profile.recipient_code ? profile.recipient_code.trim().toUpperCase() : null,
-      pec: profile.pec ? profile.pec.trim() : null,
-      contact_email: profile.contact_email.trim(),
-      address: profile.address.trim(),
-      city: profile.city.trim(),
-      province: profile.province.trim().toUpperCase(),
-      postal_code: profile.postal_code.trim(),
-    };
+    const payload = buildPayload();
     setSaving(true);
     setErrors({});
     try {
-      await apiSaveProfile(token, payload);
-      toast.show(isNew ? "Identità fiscale creata" : "Profilo aggiornato", "success");
+      if (isNew) {
+        await apiCreateProfile(token, payload);
+        toast.show("Identità fiscale creata", "success");
+      } else {
+        await apiUpdateProfile(token, id!, payload);
+        toast.show("Profilo aggiornato", "success");
+      }
       router.replace("/dashboard");
     } catch (e: any) {
       if (e.detail?.errors) setErrors(e.detail.errors);
@@ -106,50 +124,59 @@ export default function EditFiscalProfile() {
     }
   };
 
+  const onDelete = async () => {
+    if (!token || !id) return;
+    setDeleting(true);
+    try {
+      await apiDeleteProfile(token, id);
+      toast.show("Identità eliminata", "success");
+      router.replace("/dashboard");
+    } catch (e: any) {
+      toast.show(e.detail || "Errore eliminazione", "error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   if (loading) return <View style={styles.center}><ActivityIndicator color={colors.brandSecondary} /></View>;
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.root}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
-        <Pressable testID="edit-back" onPress={() => router.back()} style={{ padding: spacing.sm }}>
+        <Pressable testID="edit-back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/dashboard"))} style={{ padding: spacing.sm }}>
           <Text style={styles.backText}>‹  Indietro</Text>
         </Pressable>
-        <Text style={styles.headerTitle}>{isNew ? "Nuovo profilo" : "Modifica profilo"}</Text>
+        <Text style={styles.headerTitle}>{isNew ? "Nuova identità" : "Modifica identità"}</Text>
         <View style={{ width: 90 }} />
       </View>
 
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: insets.bottom + 120, gap: spacing.md }}
+        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: insets.bottom + 140, gap: spacing.md }}
         keyboardShouldPersistTaps="handled"
       >
+        <AppInput
+          testID="input-label"
+          label="Etichetta identità"
+          value={profile.label || ""}
+          onChangeText={set("label")}
+          placeholder='Es. "Personale", "Studio Rossi"'
+          helperText="Ti aiuta a distinguere le identità nel dashboard."
+        />
+
         <Text style={styles.eyebrow}>Chi sei</Text>
         <Text style={styles.title}>Tipo di soggetto</Text>
 
         <View style={styles.segmentRow}>
           {(
-            [
-              ["individual", "Privato"],
-              ["professional", "Professionista"],
-              ["company", "Azienda"],
-            ] as [EntityType, string][]
-          ).map(([t, label]) => (
+            [["individual","Privato"],["professional","Professionista"],["company","Azienda"]] as [EntityType,string][]
+          ).map(([t,label]) => (
             <Pressable
               key={t}
               testID={`entity-${t}`}
               onPress={() => setProfile((p) => ({ ...p, entity_type: t }))}
-              style={[
-                styles.segment,
-                profile.entity_type === t && styles.segmentActive,
-              ]}
+              style={[styles.segment, profile.entity_type === t && styles.segmentActive]}
             >
-              <Text
-                style={[
-                  styles.segmentText,
-                  profile.entity_type === t && styles.segmentTextActive,
-                ]}
-              >
-                {label}
-              </Text>
+              <Text style={[styles.segmentText, profile.entity_type === t && styles.segmentTextActive]}>{label}</Text>
             </Pressable>
           ))}
         </View>
@@ -166,160 +193,59 @@ export default function EditFiscalProfile() {
           />
         ) : (
           <>
-            <AppInput
-              testID="input-first-name"
-              label="Nome"
-              value={profile.first_name || ""}
-              onChangeText={set("first_name")}
-              placeholder="Mario"
-              error={errors.first_name}
-            />
-            <AppInput
-              testID="input-last-name"
-              label="Cognome"
-              value={profile.last_name || ""}
-              onChangeText={set("last_name")}
-              placeholder="Rossi"
-              error={errors.last_name}
-            />
+            <AppInput testID="input-first-name" label="Nome" value={profile.first_name || ""} onChangeText={set("first_name")} placeholder="Mario" error={errors.first_name} />
+            <AppInput testID="input-last-name" label="Cognome" value={profile.last_name || ""} onChangeText={set("last_name")} placeholder="Rossi" error={errors.last_name} />
           </>
         )}
 
         <Text style={[styles.eyebrow, { marginTop: spacing.lg }]}>Dati fiscali</Text>
         {(profile.entity_type === "professional" || profile.entity_type === "company") && (
-          <AppInput
-            testID="input-vat"
-            label="Partita IVA"
-            value={profile.vat_number || ""}
-            onChangeText={set("vat_number")}
-            keyboardType="number-pad"
-            maxLength={11}
-            placeholder="11 cifre"
-            error={errors.vat_number}
-          />
+          <AppInput testID="input-vat" label="Partita IVA" value={profile.vat_number || ""} onChangeText={set("vat_number")} keyboardType="number-pad" maxLength={11} placeholder="11 cifre" error={errors.vat_number} />
         )}
         {profile.entity_type !== "company" && (
-          <AppInput
-            testID="input-cf"
-            label="Codice fiscale"
-            value={profile.tax_code || ""}
-            onChangeText={(v) => set("tax_code")(v.toUpperCase())}
-            autoCapitalize="characters"
-            maxLength={16}
-            placeholder="16 caratteri"
-            error={errors.tax_code}
-          />
+          <AppInput testID="input-cf" label="Codice fiscale" value={profile.tax_code || ""} onChangeText={(v) => set("tax_code")(v.toUpperCase())} autoCapitalize="characters" maxLength={16} placeholder="16 caratteri" error={errors.tax_code} />
         )}
-        <AppInput
-          testID="input-recipient"
-          label="Codice destinatario"
-          value={profile.recipient_code || ""}
-          onChangeText={(v) => set("recipient_code")(v.toUpperCase())}
-          autoCapitalize="characters"
-          maxLength={7}
-          placeholder="Es. 0000000 o 6-7 caratteri"
-          error={errors.recipient_code}
-        />
-        <AppInput
-          testID="input-pec"
-          label="PEC"
-          value={profile.pec || ""}
-          onChangeText={set("pec")}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          placeholder="nome@pec.example.it"
-          error={errors.pec}
-        />
+        <AppInput testID="input-recipient" label="Codice destinatario" value={profile.recipient_code || ""} onChangeText={(v) => set("recipient_code")(v.toUpperCase())} autoCapitalize="characters" maxLength={7} placeholder="Es. 0000000 o 6-7 caratteri" error={errors.recipient_code} />
+        <AppInput testID="input-pec" label="PEC" value={profile.pec || ""} onChangeText={set("pec")} keyboardType="email-address" autoCapitalize="none" placeholder="nome@pec.example.it" error={errors.pec} />
 
         <Text style={[styles.eyebrow, { marginTop: spacing.lg }]}>Indirizzo</Text>
-        <AppInput
-          testID="input-address"
-          label="Indirizzo"
-          value={profile.address}
-          onChangeText={set("address")}
-          placeholder="Via Roma"
-          error={errors.address}
-        />
+        <AppInput testID="input-address" label="Indirizzo" value={profile.address} onChangeText={set("address")} placeholder="Via Roma" error={errors.address} />
         <View style={{ flexDirection: "row", gap: spacing.md }}>
           <View style={{ flex: 1 }}>
-            <AppInput
-              testID="input-street-number"
-              label="Numero civico"
-              value={profile.street_number || ""}
-              onChangeText={set("street_number")}
-              placeholder="10"
-            />
+            <AppInput testID="input-street-number" label="Numero civico" value={profile.street_number || ""} onChangeText={set("street_number")} placeholder="10" />
           </View>
           <View style={{ flex: 1 }}>
-            <AppInput
-              testID="input-cap"
-              label="CAP"
-              value={profile.postal_code}
-              onChangeText={set("postal_code")}
-              keyboardType="number-pad"
-              maxLength={5}
-              placeholder="00100"
-              error={errors.postal_code}
-            />
+            <AppInput testID="input-cap" label="CAP" value={profile.postal_code} onChangeText={set("postal_code")} keyboardType="number-pad" maxLength={5} placeholder="00100" error={errors.postal_code} />
           </View>
         </View>
-        <AppInput
-          testID="input-city"
-          label="Città"
-          value={profile.city}
-          onChangeText={set("city")}
-          placeholder="Roma"
-          error={errors.city}
-        />
+        <AppInput testID="input-city" label="Città" value={profile.city} onChangeText={set("city")} placeholder="Roma" error={errors.city} />
         <View style={{ flexDirection: "row", gap: spacing.md }}>
           <View style={{ flex: 1 }}>
-            <AppInput
-              testID="input-province"
-              label="Provincia"
-              value={profile.province}
-              onChangeText={(v) => set("province")(v.toUpperCase())}
-              maxLength={2}
-              autoCapitalize="characters"
-              placeholder="RM"
-              error={errors.province}
-            />
+            <AppInput testID="input-province" label="Provincia" value={profile.province} onChangeText={(v) => set("province")(v.toUpperCase())} maxLength={2} autoCapitalize="characters" placeholder="RM" error={errors.province} />
           </View>
           <View style={{ flex: 1 }}>
-            <AppInput
-              testID="input-country"
-              label="Paese"
-              value={profile.country}
-              onChangeText={(v) => set("country")(v.toUpperCase())}
-              maxLength={2}
-              autoCapitalize="characters"
-              placeholder="IT"
-            />
+            <AppInput testID="input-country" label="Paese" value={profile.country} onChangeText={(v) => set("country")(v.toUpperCase())} maxLength={2} autoCapitalize="characters" placeholder="IT" />
           </View>
         </View>
 
         <Text style={[styles.eyebrow, { marginTop: spacing.lg }]}>Contatti</Text>
-        <AppInput
-          testID="input-email"
-          label="Email di contatto"
-          value={profile.contact_email}
-          onChangeText={set("contact_email")}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          placeholder="mario@example.com"
-          error={errors.contact_email}
-        />
-        <AppInput
-          testID="input-phone"
-          label="Telefono"
-          value={profile.contact_phone || ""}
-          onChangeText={set("contact_phone")}
-          keyboardType="phone-pad"
-          placeholder="+39 333 1234567"
-        />
+        <AppInput testID="input-email" label="Email di contatto" value={profile.contact_email} onChangeText={set("contact_email")} keyboardType="email-address" autoCapitalize="none" placeholder="mario@example.com" error={errors.contact_email} />
+        <AppInput testID="input-phone" label="Telefono" value={profile.contact_phone || ""} onChangeText={set("contact_phone")} keyboardType="phone-pad" placeholder="+39 333 1234567" />
 
         <Text style={styles.disclaimer}>
           Le validazioni verificano il solo formato dei dati e non certificano l'esistenza fiscale del soggetto.
         </Text>
+
+        {!isNew && (
+          <Pressable
+            testID="edit-delete-button"
+            onPress={onDelete}
+            disabled={deleting}
+            style={styles.deleteBtn}
+          >
+            <Text style={styles.deleteText}>{deleting ? "Eliminazione…" : "Elimina questa identità"}</Text>
+          </Pressable>
+        )}
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
@@ -338,11 +264,8 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.surface },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
   header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.md,
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    paddingHorizontal: spacing.lg, paddingBottom: spacing.md,
   },
   headerTitle: { color: colors.onSurface, fontSize: 15, fontWeight: "700", letterSpacing: 0.5 },
   backText: { color: colors.onSurfaceSecondary, fontSize: 15 },
@@ -350,25 +273,22 @@ const styles = StyleSheet.create({
   title: { fontFamily: font.display, color: colors.onSurface, fontSize: 22, marginBottom: spacing.md },
   segmentRow: { flexDirection: "row", gap: spacing.sm },
   segment: {
-    flex: 1,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.sm,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: 14,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.border,
+    flex: 1, paddingVertical: spacing.md, paddingHorizontal: spacing.sm,
+    backgroundColor: colors.surfaceSecondary, borderRadius: 14,
+    alignItems: "center", borderWidth: 1, borderColor: colors.border,
   },
   segmentActive: { backgroundColor: colors.brandTertiary, borderColor: colors.brandSecondary },
   segmentText: { color: colors.onSurfaceSecondary, fontSize: 13, fontWeight: "600" },
   segmentTextActive: { color: colors.brandSecondary, fontWeight: "700" },
   disclaimer: { ...type.small, color: colors.muted, marginTop: spacing.lg, fontStyle: "italic" },
+  deleteBtn: {
+    marginTop: spacing.xl, alignSelf: "center", paddingVertical: spacing.md, paddingHorizontal: spacing.xl,
+    borderRadius: 999, borderWidth: 1, borderColor: colors.error,
+  },
+  deleteText: { color: colors.error, fontSize: 13, fontWeight: "700" },
   footer: {
-    position: "absolute",
-    bottom: 0, left: 0, right: 0,
-    padding: spacing.lg,
-    backgroundColor: "rgba(5,5,5,0.95)",
-    borderTopWidth: 1,
-    borderTopColor: colors.divider,
+    position: "absolute", bottom: 0, left: 0, right: 0,
+    padding: spacing.lg, backgroundColor: "rgba(5,5,5,0.95)",
+    borderTopWidth: 1, borderTopColor: colors.divider,
   },
 });

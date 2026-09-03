@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Clipboard from "expo-clipboard";
 import QRCode from "react-native-qrcode-svg";
@@ -13,24 +13,27 @@ import { colors, spacing, type, font } from "../src/theme";
 export default function Share() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { id } = useLocalSearchParams<{ id?: string }>();
   const { token } = useAuth();
   const toast = useToast();
   const [shareToken, setShareToken] = useState<string | null>(null);
+  const [profileLabel, setProfileLabel] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const generate = useCallback(async () => {
     if (!token) return;
     setCreating(true);
     try {
-      const r = await apiCreateShare(token);
+      const r = await apiCreateShare(token, id);
       setShareToken(r.token);
-      apiTrackEvent("share_created");
+      setProfileLabel(r.profile_label);
+      apiTrackEvent("share_created", { profile_id: r.profile_id });
     } catch (e: any) {
       toast.show(e.detail || "Errore generazione", "error");
     } finally {
       setCreating(false);
     }
-  }, [token, toast]);
+  }, [token, id, toast]);
 
   useEffect(() => {
     generate();
@@ -60,6 +63,12 @@ export default function Share() {
         <Text style={styles.body}>
           L'operatore lo scansiona e riceve solo i dati necessari alla fattura. Nessun dato viene pronunciato.
         </Text>
+        {profileLabel ? (
+          <View testID="share-profile-badge" style={styles.profileBadge}>
+            <View style={styles.brandDot} />
+            <Text style={styles.profileBadgeText}>Identità: {profileLabel}</Text>
+          </View>
+        ) : null}
 
         <View testID="qr-card" style={styles.qrCard}>
           {creating || !shareToken ? (
@@ -150,6 +159,14 @@ const styles = StyleSheet.create({
   },
   brandDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.brand },
   qrFooterText: { color: colors.onSurfaceInverse, fontSize: 11, fontWeight: "700", letterSpacing: 1.5 },
+  profileBadge: {
+    flexDirection: "row", alignItems: "center", gap: spacing.xs,
+    paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: 999,
+    backgroundColor: colors.brandTertiary,
+    borderWidth: 1, borderColor: colors.brandSecondary,
+    alignSelf: "center",
+  },
+  profileBadgeText: { color: colors.brandSecondary, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
   tokenHint: {
     color: colors.muted,
     fontSize: 11,
