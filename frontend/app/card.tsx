@@ -109,24 +109,36 @@ export default function Card() {
           vatMasked={maskVat(profile.vat_number)}
         />
 
-        <View style={styles.walletRow}>
-          <Pressable
-            testID="add-apple-wallet"
-            onPress={() => openWallet("apple")}
-            disabled={walletLoading}
-            style={[styles.walletBtn, { backgroundColor: "#000", borderColor: "#333" }]}
-          >
-            <Text style={styles.walletBtnText}>  Aggiungi a Apple Wallet</Text>
-          </Pressable>
-          <Pressable
-            testID="add-google-wallet"
-            onPress={() => openWallet("google")}
-            disabled={walletLoading}
-            style={[styles.walletBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
-          >
-            <Text style={styles.walletBtnText}>G  Aggiungi a Google Wallet</Text>
-          </Pressable>
-        </View>
+        {profile.is_delegate ? (
+          <View style={styles.delegateBanner} testID="card-delegate-banner">
+            <View style={styles.delegateBannerDot} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.delegateBannerTitle}>Delega attiva</Text>
+              <Text style={styles.delegateBannerBody}>
+                di {profile.admin_email} · {(profile.permissions || []).join(" + ") || "nessun permesso"}
+              </Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.walletRow}>
+            <Pressable
+              testID="add-apple-wallet"
+              onPress={() => openWallet("apple")}
+              disabled={walletLoading}
+              style={[styles.walletBtn, { backgroundColor: "#000", borderColor: "#333" }]}
+            >
+              <Text style={styles.walletBtnText}>  Aggiungi a Apple Wallet</Text>
+            </Pressable>
+            <Pressable
+              testID="add-google-wallet"
+              onPress={() => openWallet("google")}
+              disabled={walletLoading}
+              style={[styles.walletBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+            >
+              <Text style={styles.walletBtnText}>G  Aggiungi a Google Wallet</Text>
+            </Pressable>
+          </View>
+        )}
 
         <View style={styles.detailBox}>
           <Text style={styles.section}>Anagrafica</Text>
@@ -191,6 +203,15 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center",
   },
   walletBtnText: { color: colors.onSurface, fontSize: 13, fontWeight: "700" },
+  delegateBanner: {
+    flexDirection: "row", alignItems: "center", gap: spacing.sm,
+    padding: spacing.md, borderRadius: 14,
+    backgroundColor: "rgba(217, 119, 6, 0.1)",
+    borderWidth: 1, borderColor: "rgba(217, 119, 6, 0.4)",
+  },
+  delegateBannerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.warning },
+  delegateBannerTitle: { color: colors.warning, fontSize: 12, fontWeight: "700", letterSpacing: 0.5 },
+  delegateBannerBody: { color: colors.onSurfaceSecondary, fontSize: 12, marginTop: 2 },
   detailBox: {
     backgroundColor: colors.surfaceSecondary, borderRadius: 20,
     padding: spacing.lg, borderWidth: 1, borderColor: colors.border,

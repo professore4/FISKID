@@ -9,7 +9,7 @@ import secrets
 import zipfile
 import logging
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 
 import bcrypt
 import jwt
@@ -35,7 +35,6 @@ ACCESS_MINUTES = 60 * 24 * 30
 RESET_MINUTES = 30
 ENV = os.environ.get('ENV', 'development')
 
-# Wallet Pass placeholders (real values plugged in when credentials arrive)
 APPLE_PASS_TYPE_ID = os.environ.get('APPLE_PASS_TYPE_ID', 'pass.com.emergent.fiskid')
 APPLE_TEAM_ID = os.environ.get('APPLE_TEAM_ID', 'TEAMPLACEHOLDER')
 GOOGLE_WALLET_ISSUER_ID = os.environ.get('GOOGLE_WALLET_ISSUER_ID', '3388000000000000000')
@@ -48,15 +47,17 @@ fiscal_profiles = db.fiscal_profiles
 shares = db.shares
 product_events = db.product_events
 resets_col = db.password_resets
+delegates_col = db.delegates
 
 bearer = HTTPBearer(auto_error=False)
+
+Permission = Literal["send", "receive"]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.command("ping")
     await users.create_index("email", unique=True)
-    # Drop legacy unique index on user_id (single profile per user) if present
     try:
         info = await fiscal_profiles.index_information()
         if "user_id_1" in info and info["user_id_1"].get("unique"):
@@ -69,6 +70,10 @@ async def lifespan(app: FastAPI):
     await product_events.create_index("user_id")
     await product_events.create_index("event_name")
     await resets_col.create_index("expires_at", expireAfterSeconds=0)
+    await delegates_col.create_index(
+        [("fiscal_profile_id", 1), ("delegate_email", 1)], unique=True
+    )
+    await delegates_col.create_index("delegate_user_id")
     yield
     client.close()
 
@@ -133,6 +138,15 @@ class ShareCreateIn(BaseModel):
     fiscal_profile_id: Optional[str] = None
 
 
+class DelegateIn(BaseModel):
+    email: EmailStr
+    permissions: List[Permission] = Field(min_length=1)
+
+
+class DelegatePermsIn(BaseModel):
+    permissions: List[Permission] = Field(min_length=1)
+
+
 # -------------- Password helpers --------------
 async def hash_password(password: str) -> str:
     raw = await run_in_threadpool(
@@ -152,12 +166,7 @@ DUMMY_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt(rounds=12)).de
 
 def create_access_token(user_id: str) -> str:
     now = datetime.now(timezone.utc)
-    payload = {
-        "sub": user_id,
-        "iat": now,
-        "exp": now + timedelta(minutes=ACCESS_MINUTES),
-        "typ": "access",
-    }
+    payload = {"sub": user_id, "iat": now, "exp": now + timedelta(minutes=ACCESS_MINUTES), "typ": "access"}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -198,10 +207,8 @@ def normalize_email(email: str) -> str:
 async def log_event(event_name: str, user_id: Optional[str] = None, metadata: Optional[dict] = None):
     try:
         await product_events.insert_one({
-            "user_id": user_id,
-            "event_name": event_name,
-            "event_metadata": metadata or {},
-            "created_at": datetime.now(timezone.utc),
+            "user_id": user_id, "event_name": event_name,
+            "event_metadata": metadata or {}, "created_at": datetime.now(timezone.utc),
         })
     except Exception as e:
         logging.warning(f"event log failed: {e}")
@@ -233,7 +240,6 @@ def validate_fiscal_payload(p: FiscalProfileIn):
             errors["tax_code"] = "Codice fiscale non valido (16 caratteri)"
         if p.entity_type == "individual" and not p.tax_code:
             errors["tax_code"] = "Codice fiscale obbligatorio"
-
     if not CAP_RE.match(p.postal_code):
         errors["postal_code"] = "CAP non valido (5 cifre)"
     if p.recipient_code and not RECIPIENT_RE.match(p.recipient_code.upper()):
@@ -265,13 +271,15 @@ def profile_to_public(p: dict) -> dict:
     }
 
 
-def profile_to_private(p: dict) -> dict:
+def profile_to_private(p: dict, extra: Optional[dict] = None) -> dict:
     d = profile_to_public(p)
     d["id"] = str(p["_id"])
     d["label"] = p.get("label")
     d["is_default"] = bool(p.get("is_default", False))
     d["created_at"] = p.get("created_at").isoformat() if p.get("created_at") else None
     d["updated_at"] = p.get("updated_at").isoformat() if p.get("updated_at") else None
+    if extra:
+        d.update(extra)
     return d
 
 
@@ -290,7 +298,8 @@ def to_object_id(s: str) -> ObjectId:
         raise HTTPException(status_code=404, detail="Profilo non trovato")
 
 
-async def fetch_user_profile(user_id, profile_id: str) -> dict:
+async def fetch_owned_profile(user_id, profile_id: str) -> dict:
+    """Return a profile that belongs to `user_id` (admin-only access)."""
     p = await fiscal_profiles.find_one({
         "_id": to_object_id(profile_id),
         "user_id": user_id,
@@ -301,6 +310,56 @@ async def fetch_user_profile(user_id, profile_id: str) -> dict:
     return p
 
 
+async def get_delegation(user_id, profile_id) -> Optional[dict]:
+    return await delegates_col.find_one({
+        "fiscal_profile_id": profile_id if isinstance(profile_id, ObjectId) else to_object_id(profile_id),
+        "delegate_user_id": user_id,
+        "status": "active",
+    })
+
+
+async def fetch_accessible_profile(user, profile_id: str, required_permission: Optional[Permission] = None) -> dict:
+    """Return a profile the caller can access as owner or as active delegate."""
+    p = await fiscal_profiles.find_one({
+        "_id": to_object_id(profile_id),
+        "deleted_at": {"$exists": False},
+    })
+    if not p:
+        raise HTTPException(status_code=404, detail="Profilo non trovato")
+    if p["user_id"] == user["_id"]:
+        return p
+    deleg = await get_delegation(user["_id"], p["_id"])
+    if not deleg:
+        raise HTTPException(status_code=404, detail="Profilo non trovato")
+    if required_permission and required_permission not in deleg.get("permissions", []):
+        raise HTTPException(status_code=403, detail=f"Manca il permesso '{required_permission}' su questa identità")
+    return p
+
+
+def delegate_public(d: dict, admin_email: Optional[str] = None) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "email": d.get("delegate_email"),
+        "permissions": d.get("permissions", []),
+        "status": d.get("status"),
+        "linked": d.get("delegate_user_id") is not None,
+        "created_at": d["created_at"].isoformat() if d.get("created_at") else None,
+        "resolved_at": d["resolved_at"].isoformat() if d.get("resolved_at") else None,
+        "revoked_at": d["revoked_at"].isoformat() if d.get("revoked_at") else None,
+        **({"admin_email": admin_email} if admin_email else {}),
+    }
+
+
+async def resolve_pending_invitations(user_id, email: str):
+    """When a user registers/logs in for the first time with an email that had
+    pending delegate invitations, link them automatically."""
+    now = datetime.now(timezone.utc)
+    await delegates_col.update_many(
+        {"delegate_email": email, "delegate_user_id": None, "status": "invited"},
+        {"$set": {"delegate_user_id": user_id, "status": "active", "resolved_at": now}},
+    )
+
+
 # -------------- Auth routes --------------
 @api_router.post("/auth/register", response_model=TokenResponse, status_code=201)
 async def register(body: Credentials):
@@ -309,13 +368,13 @@ async def register(body: Credentials):
         raise HTTPException(status_code=409, detail="Email già registrata")
     hashed = await hash_password(body.password)
     result = await users.insert_one({
-        "email": email,
-        "password_hash": hashed,
+        "email": email, "password_hash": hashed,
         "created_at": datetime.now(timezone.utc),
     })
-    uid = str(result.inserted_id)
-    await log_event("user_registered", user_id=uid, metadata={"email": email})
-    return {"access_token": create_access_token(uid), "token_type": "bearer"}
+    uid = result.inserted_id
+    await resolve_pending_invitations(uid, email)
+    await log_event("user_registered", user_id=str(uid), metadata={"email": email})
+    return {"access_token": create_access_token(str(uid)), "token_type": "bearer"}
 
 
 @api_router.post("/auth/login", response_model=TokenResponse)
@@ -325,6 +384,8 @@ async def login(body: Credentials):
     valid = await verify_password(body.password, user["password_hash"] if user else DUMMY_HASH)
     if not user or not valid:
         raise HTTPException(status_code=401, detail="Email o password non corretti")
+    # Late-linking safety: if invitations arrived after registration, hook them up.
+    await resolve_pending_invitations(user["_id"], email)
     return {"access_token": create_access_token(str(user["_id"])), "token_type": "bearer"}
 
 
@@ -373,42 +434,54 @@ async def reset_password(body: ResetConfirm):
     return {"message": "Password reimpostata con successo"}
 
 
-# -------------- Fiscal profiles (multi) --------------
+# -------------- Fiscal profiles (multi + delegated) --------------
 @api_router.get("/fiscal-profiles")
 async def list_profiles(user=Depends(current_user)):
-    cursor = fiscal_profiles.find({
-        "user_id": user["_id"],
-        "deleted_at": {"$exists": False},
-    }).sort("created_at", 1)
     items = []
-    async for p in cursor:
-        items.append(profile_to_private(p))
-    # Ensure at least one default when possible: mark the oldest if none
-    if items and not any(x["is_default"] for x in items):
-        oldest = items[0]
+    # Owned
+    async for p in fiscal_profiles.find({
+        "user_id": user["_id"], "deleted_at": {"$exists": False},
+    }).sort("created_at", 1):
+        items.append(profile_to_private(p, {"is_delegate": False, "permissions": ["send", "receive"]}))
+    # Ensure at least one default among owned
+    owned = [x for x in items if not x["is_delegate"]]
+    if owned and not any(x["is_default"] for x in owned):
         await fiscal_profiles.update_one(
-            {"_id": ObjectId(oldest["id"])}, {"$set": {"is_default": True}}
+            {"_id": ObjectId(owned[0]["id"])}, {"$set": {"is_default": True}}
         )
-        oldest["is_default"] = True
+        owned[0]["is_default"] = True
+
+    # Delegated
+    async for d in delegates_col.find({
+        "delegate_user_id": user["_id"], "status": "active",
+    }):
+        p = await fiscal_profiles.find_one({
+            "_id": d["fiscal_profile_id"],
+            "deleted_at": {"$exists": False},
+        })
+        if not p:
+            continue
+        admin = await users.find_one({"_id": p["user_id"]}, {"email": 1})
+        items.append(profile_to_private(p, {
+            "is_delegate": True,
+            "is_default": False,
+            "permissions": d.get("permissions", []),
+            "admin_email": admin.get("email") if admin else None,
+            "delegation_id": str(d["_id"]),
+        }))
     return {"profiles": items}
 
 
-# Backward compatible: returns the default profile (or first) as a single object
 @api_router.get("/fiscal-profile")
 async def get_default_profile(user=Depends(current_user)):
     profile = await fiscal_profiles.find_one({
-        "user_id": user["_id"],
-        "is_default": True,
-        "deleted_at": {"$exists": False},
-    })
-    if not profile:
-        profile = await fiscal_profiles.find_one({
-            "user_id": user["_id"],
-            "deleted_at": {"$exists": False},
-        }, sort=[("created_at", 1)])
+        "user_id": user["_id"], "is_default": True, "deleted_at": {"$exists": False},
+    }) or await fiscal_profiles.find_one({
+        "user_id": user["_id"], "deleted_at": {"$exists": False},
+    }, sort=[("created_at", 1)])
     if not profile:
         return {"profile": None}
-    return {"profile": profile_to_private(profile)}
+    return {"profile": profile_to_private(profile, {"is_delegate": False, "permissions": ["send", "receive"]})}
 
 
 @api_router.post("/fiscal-profiles")
@@ -423,26 +496,20 @@ async def create_profile(payload: FiscalProfileIn, user=Depends(current_user)):
         data["recipient_code"] = data["recipient_code"].upper()
     if not data.get("label"):
         data["label"] = default_label(payload)
-
     existing_count = await fiscal_profiles.count_documents({
-        "user_id": uid,
-        "deleted_at": {"$exists": False},
+        "user_id": uid, "deleted_at": {"$exists": False},
     })
     data["user_id"] = uid
-    data["is_default"] = existing_count == 0  # first profile becomes default
+    data["is_default"] = existing_count == 0
     data["created_at"] = now
     data["updated_at"] = now
     res = await fiscal_profiles.insert_one(data)
-    await log_event(
-        "fiscal_profile_completed",
-        user_id=str(uid),
-        metadata={"profile_id": str(res.inserted_id)},
-    )
+    await log_event("fiscal_profile_completed", user_id=str(uid),
+                    metadata={"profile_id": str(res.inserted_id)})
     created = await fiscal_profiles.find_one({"_id": res.inserted_id})
     return {"profile": profile_to_private(created)}
 
 
-# Legacy singular endpoint kept for backward compatibility (create-or-update default)
 @api_router.post("/fiscal-profile")
 async def upsert_default_profile(payload: FiscalProfileIn, user=Depends(current_user)):
     validate_fiscal_payload(payload)
@@ -455,16 +522,11 @@ async def upsert_default_profile(payload: FiscalProfileIn, user=Depends(current_
         data["recipient_code"] = data["recipient_code"].upper()
     if not data.get("label"):
         data["label"] = default_label(payload)
-
     existing = await fiscal_profiles.find_one({
-        "user_id": uid,
-        "is_default": True,
-        "deleted_at": {"$exists": False},
+        "user_id": uid, "is_default": True, "deleted_at": {"$exists": False},
     }) or await fiscal_profiles.find_one({
-        "user_id": uid,
-        "deleted_at": {"$exists": False},
+        "user_id": uid, "deleted_at": {"$exists": False},
     }, sort=[("created_at", 1)])
-
     if existing:
         data["updated_at"] = now
         await fiscal_profiles.update_one({"_id": existing["_id"]}, {"$set": data})
@@ -472,7 +534,6 @@ async def upsert_default_profile(payload: FiscalProfileIn, user=Depends(current_
                         metadata={"profile_id": str(existing["_id"])})
         updated = await fiscal_profiles.find_one({"_id": existing["_id"]})
         return {"profile": profile_to_private(updated)}
-
     data["user_id"] = uid
     data["is_default"] = True
     data["created_at"] = now
@@ -486,14 +547,31 @@ async def upsert_default_profile(payload: FiscalProfileIn, user=Depends(current_
 
 @api_router.get("/fiscal-profiles/{profile_id}")
 async def get_profile(profile_id: str, user=Depends(current_user)):
-    p = await fetch_user_profile(user["_id"], profile_id)
-    return {"profile": profile_to_private(p)}
+    p = await fiscal_profiles.find_one({
+        "_id": to_object_id(profile_id),
+        "deleted_at": {"$exists": False},
+    })
+    if not p:
+        raise HTTPException(status_code=404, detail="Profilo non trovato")
+    if p["user_id"] == user["_id"]:
+        return {"profile": profile_to_private(p, {"is_delegate": False, "permissions": ["send", "receive"]})}
+    deleg = await get_delegation(user["_id"], p["_id"])
+    if not deleg:
+        raise HTTPException(status_code=404, detail="Profilo non trovato")
+    admin = await users.find_one({"_id": p["user_id"]}, {"email": 1})
+    return {"profile": profile_to_private(p, {
+        "is_delegate": True,
+        "permissions": deleg.get("permissions", []),
+        "admin_email": admin.get("email") if admin else None,
+        "delegation_id": str(deleg["_id"]),
+        "is_default": False,
+    })}
 
 
 @api_router.put("/fiscal-profiles/{profile_id}")
 async def update_profile(profile_id: str, payload: FiscalProfileIn, user=Depends(current_user)):
     validate_fiscal_payload(payload)
-    existing = await fetch_user_profile(user["_id"], profile_id)
+    existing = await fetch_owned_profile(user["_id"], profile_id)
     data = payload.model_dump()
     if data.get("tax_code"):
         data["tax_code"] = data["tax_code"].upper()
@@ -511,43 +589,118 @@ async def update_profile(profile_id: str, payload: FiscalProfileIn, user=Depends
 
 @api_router.post("/fiscal-profiles/{profile_id}/set-default")
 async def set_default_profile(profile_id: str, user=Depends(current_user)):
-    p = await fetch_user_profile(user["_id"], profile_id)
-    await fiscal_profiles.update_many(
-        {"user_id": user["_id"]},
-        {"$set": {"is_default": False}},
-    )
+    p = await fetch_owned_profile(user["_id"], profile_id)
+    await fiscal_profiles.update_many({"user_id": user["_id"]}, {"$set": {"is_default": False}})
     await fiscal_profiles.update_one({"_id": p["_id"]}, {"$set": {"is_default": True}})
     return {"ok": True}
 
 
 @api_router.delete("/fiscal-profiles/{profile_id}")
 async def delete_profile(profile_id: str, user=Depends(current_user)):
-    p = await fetch_user_profile(user["_id"], profile_id)
+    p = await fetch_owned_profile(user["_id"], profile_id)
     await fiscal_profiles.update_one(
         {"_id": p["_id"]},
         {"$set": {"deleted_at": datetime.now(timezone.utc), "is_default": False}},
     )
-    # Revoke active shares for that profile
     await shares.update_many(
         {"fiscal_profile_id": p["_id"], "is_active": True},
         {"$set": {"is_active": False}},
     )
-    # Ensure some default remains
+    # Revoke delegates as well
+    await delegates_col.update_many(
+        {"fiscal_profile_id": p["_id"], "status": "active"},
+        {"$set": {"status": "revoked", "revoked_at": datetime.now(timezone.utc)}},
+    )
     remaining = await fiscal_profiles.count_documents({
-        "user_id": user["_id"],
-        "is_default": True,
-        "deleted_at": {"$exists": False},
+        "user_id": user["_id"], "is_default": True, "deleted_at": {"$exists": False},
     })
     if remaining == 0:
         oldest = await fiscal_profiles.find_one({
-            "user_id": user["_id"],
-            "deleted_at": {"$exists": False},
+            "user_id": user["_id"], "deleted_at": {"$exists": False},
         }, sort=[("created_at", 1)])
         if oldest:
             await fiscal_profiles.update_one({"_id": oldest["_id"]}, {"$set": {"is_default": True}})
     return {"ok": True}
 
 
+# -------------- Delegates (company profiles only) --------------
+@api_router.get("/fiscal-profiles/{profile_id}/delegates")
+async def list_delegates(profile_id: str, user=Depends(current_user)):
+    p = await fetch_owned_profile(user["_id"], profile_id)
+    if p.get("entity_type") != "company":
+        raise HTTPException(status_code=400, detail="I delegati sono disponibili solo per identità aziendali")
+    out = []
+    async for d in delegates_col.find({"fiscal_profile_id": p["_id"], "status": {"$in": ["invited", "active"]}}).sort("created_at", 1):
+        out.append(delegate_public(d))
+    return {"delegates": out}
+
+
+@api_router.post("/fiscal-profiles/{profile_id}/delegates", status_code=201)
+async def add_delegate(profile_id: str, body: DelegateIn, user=Depends(current_user)):
+    p = await fetch_owned_profile(user["_id"], profile_id)
+    if p.get("entity_type") != "company":
+        raise HTTPException(status_code=400, detail="I delegati sono disponibili solo per identità aziendali")
+    delegate_email = normalize_email(str(body.email))
+    # Prevent adding self as delegate
+    owner_email = (await users.find_one({"_id": user["_id"]}, {"email": 1})).get("email")
+    if delegate_email == owner_email:
+        raise HTTPException(status_code=400, detail="Non puoi delegare te stesso")
+
+    # Resolve existing user if any
+    dele_user = await users.find_one({"email": delegate_email}, {"_id": 1})
+    now = datetime.now(timezone.utc)
+    doc = {
+        "fiscal_profile_id": p["_id"],
+        "admin_user_id": user["_id"],
+        "delegate_email": delegate_email,
+        "delegate_user_id": dele_user["_id"] if dele_user else None,
+        "permissions": list(dict.fromkeys(body.permissions)),  # dedupe preserve order
+        "status": "active" if dele_user else "invited",
+        "created_at": now,
+        "resolved_at": now if dele_user else None,
+    }
+    try:
+        res = await delegates_col.insert_one(doc)
+    except Exception:
+        raise HTTPException(status_code=409, detail="Questo indirizzo è già delegato per questa identità")
+    created = await delegates_col.find_one({"_id": res.inserted_id})
+    await log_event("delegate_added", user_id=str(user["_id"]),
+                    metadata={"profile_id": profile_id, "email": delegate_email, "permissions": body.permissions})
+    return {"delegate": delegate_public(created)}
+
+
+@api_router.patch("/fiscal-profiles/{profile_id}/delegates/{delegate_id}")
+async def update_delegate(profile_id: str, delegate_id: str, body: DelegatePermsIn, user=Depends(current_user)):
+    p = await fetch_owned_profile(user["_id"], profile_id)
+    d = await delegates_col.find_one({"_id": to_object_id(delegate_id), "fiscal_profile_id": p["_id"]})
+    if not d:
+        raise HTTPException(status_code=404, detail="Delega non trovata")
+    await delegates_col.update_one(
+        {"_id": d["_id"]},
+        {"$set": {"permissions": list(dict.fromkeys(body.permissions))}},
+    )
+    await log_event("delegate_updated", user_id=str(user["_id"]),
+                    metadata={"delegate_id": delegate_id, "permissions": body.permissions})
+    updated = await delegates_col.find_one({"_id": d["_id"]})
+    return {"delegate": delegate_public(updated)}
+
+
+@api_router.delete("/fiscal-profiles/{profile_id}/delegates/{delegate_id}")
+async def revoke_delegate(profile_id: str, delegate_id: str, user=Depends(current_user)):
+    p = await fetch_owned_profile(user["_id"], profile_id)
+    d = await delegates_col.find_one({"_id": to_object_id(delegate_id), "fiscal_profile_id": p["_id"]})
+    if not d:
+        raise HTTPException(status_code=404, detail="Delega non trovata")
+    await delegates_col.update_one(
+        {"_id": d["_id"]},
+        {"$set": {"status": "revoked", "revoked_at": datetime.now(timezone.utc)}},
+    )
+    await log_event("delegate_revoked", user_id=str(user["_id"]),
+                    metadata={"delegate_id": delegate_id})
+    return {"ok": True}
+
+
+# -------------- Events --------------
 @api_router.post("/events")
 async def create_event(body: EventIn, request: Request):
     uid = None
@@ -565,15 +718,12 @@ async def create_event(body: EventIn, request: Request):
 # -------------- Shares --------------
 async def resolve_profile_for_share(user, profile_id: Optional[str]) -> dict:
     if profile_id:
-        return await fetch_user_profile(user["_id"], profile_id)
-    # Default
+        return await fetch_accessible_profile(user, profile_id, required_permission="send")
+    # Default: owner's default profile only (delegates must specify id)
     profile = await fiscal_profiles.find_one({
-        "user_id": user["_id"],
-        "is_default": True,
-        "deleted_at": {"$exists": False},
+        "user_id": user["_id"], "is_default": True, "deleted_at": {"$exists": False},
     }) or await fiscal_profiles.find_one({
-        "user_id": user["_id"],
-        "deleted_at": {"$exists": False},
+        "user_id": user["_id"], "deleted_at": {"$exists": False},
     }, sort=[("created_at", 1)])
     if not profile:
         raise HTTPException(status_code=400, detail="Completa prima il tuo profilo fiscale")
@@ -586,7 +736,8 @@ async def create_share(body: Optional[ShareCreateIn] = None, user=Depends(curren
     token = secrets.token_urlsafe(24)
     doc = {
         "fiscal_profile_id": profile["_id"],
-        "user_id": user["_id"],
+        "user_id": user["_id"],  # who created the share (may be delegate)
+        "owner_user_id": profile["user_id"],
         "share_token": token,
         "is_active": True,
         "created_at": datetime.now(timezone.utc),
@@ -596,9 +747,8 @@ async def create_share(body: Optional[ShareCreateIn] = None, user=Depends(curren
     }
     await shares.insert_one(doc)
     await log_event(
-        "share_created",
-        user_id=str(user["_id"]),
-        metadata={"profile_id": str(profile["_id"])},
+        "share_created", user_id=str(user["_id"]),
+        metadata={"profile_id": str(profile["_id"]), "as_delegate": profile["user_id"] != user["_id"]},
     )
     return {
         "token": token,
@@ -636,7 +786,6 @@ async def revoke_share(token: str, user=Depends(current_user)):
     return {"ok": True}
 
 
-# Public share endpoints (no auth)
 @api_router.get("/public/share/{token}")
 async def public_share_get(token: str):
     s = await shares.find_one({"share_token": token, "is_active": True})
@@ -664,23 +813,23 @@ async def public_share_confirm(token: str, body: Optional[ShareConfirmIn] = None
     now = datetime.now(timezone.utc)
     await shares.update_one({"_id": s["_id"]}, {"$set": {"confirmed_at": now}})
     await log_event(
-        "share_confirmed",
-        user_id=str(s["user_id"]),
+        "share_confirmed", user_id=str(s["user_id"]),
         metadata={"token": token, "note": (body.operator_note if body else None)},
     )
     return {"ok": True, "confirmed_at": now.isoformat()}
 
 
-# -------------- Wallet Pass (MVP: unsigned .pkpass + Google Wallet placeholder) --------------
+# -------------- Wallet Pass (unsigned MVP) --------------
 @api_router.post("/fiscal-profiles/{profile_id}/wallet-tokens")
 async def wallet_tokens(profile_id: str, user=Depends(current_user)):
-    p = await fetch_user_profile(user["_id"], profile_id)
+    # Owner or delegate can add to their wallet
+    p = await fetch_accessible_profile(user, profile_id)
     payload = {"pid": str(p["_id"]), "uid": str(user["_id"]), "typ": "wallet"}
     tok = create_signed_token(payload, minutes=10)
     return {
         "apple_url": f"/api/wallet/apple/{tok}",
         "google_url": f"/api/wallet/google/{tok}",
-        "note": "Preview MVP: Apple .pkpass is unsigned (iOS will refuse until you provide a Pass Type ID + certificate). Google Wallet link points to Google's save endpoint with an unsigned JWT (Google will refuse until you provide the service account).",
+        "note": "Preview MVP: Apple .pkpass unsigned (needs Pass Type ID + cert). Google JWT is HS256 placeholder (needs GCP service account).",
     }
 
 
@@ -702,30 +851,16 @@ def _pass_json(profile: dict) -> dict:
         display = profile.get("business_name") or "FiskID"
     else:
         display = " ".join([profile.get("first_name") or "", profile.get("last_name") or ""]).strip() or "FiskID"
-
     vat = profile.get("vat_number") or ""
     vat_masked = "•• •• •• •• " + vat[-3:] if vat and len(vat) > 4 else vat
-    entity_label = {
-        "individual": "Privato",
-        "professional": "Professionista",
-        "company": "Azienda",
-    }.get(profile.get("entity_type"), "Identità")
-
+    entity_label = {"individual": "Privato", "professional": "Professionista", "company": "Azienda"}.get(profile.get("entity_type"), "Identità")
     return {
-        "formatVersion": 1,
-        "passTypeIdentifier": APPLE_PASS_TYPE_ID,
-        "teamIdentifier": APPLE_TEAM_ID,
-        "organizationName": "FiskID",
-        "description": "Fiscal Identity Card",
-        "serialNumber": str(profile["_id"]),
-        "logoText": "FiskID",
-        "foregroundColor": "rgb(255, 255, 255)",
-        "backgroundColor": "rgb(5, 5, 5)",
-        "labelColor": "rgb(16, 185, 129)",
+        "formatVersion": 1, "passTypeIdentifier": APPLE_PASS_TYPE_ID, "teamIdentifier": APPLE_TEAM_ID,
+        "organizationName": "FiskID", "description": "Fiscal Identity Card",
+        "serialNumber": str(profile["_id"]), "logoText": "FiskID",
+        "foregroundColor": "rgb(255, 255, 255)", "backgroundColor": "rgb(5, 5, 5)", "labelColor": "rgb(16, 185, 129)",
         "generic": {
-            "primaryFields": [
-                {"key": "name", "label": "Identità fiscale", "value": display}
-            ],
+            "primaryFields": [{"key": "name", "label": "Identità fiscale", "value": display}],
             "secondaryFields": [
                 {"key": "type", "label": "Tipo", "value": entity_label},
                 {"key": "vat", "label": "P. IVA", "value": vat_masked or "—"},
@@ -734,10 +869,8 @@ def _pass_json(profile: dict) -> dict:
                 {"key": "city", "label": "Città", "value": profile.get("city") or "—"},
                 {"key": "cap", "label": "CAP", "value": profile.get("postal_code") or "—"},
             ],
-            "backFields": [
-                {"key": "note", "label": "Nota",
-                 "value": "Presenta questa card e condividi i dati tramite FiskID senza pronunciarli a voce."},
-            ],
+            "backFields": [{"key": "note", "label": "Nota",
+                            "value": "Presenta questa card e condividi i dati tramite FiskID senza pronunciarli a voce."}],
         },
     }
 
@@ -746,7 +879,6 @@ def _sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-# 1×1 transparent PNG placeholder (icons are required by pkpass structure)
 _PNG_1x1 = bytes.fromhex(
     "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C489000000"
     "0A49444154789C6300010000000500010D0A2DB40000000049454E44AE426082"
@@ -759,26 +891,18 @@ async def wallet_apple(token: str):
     pass_json = json.dumps(_pass_json(profile), indent=2).encode("utf-8")
     files = {
         "pass.json": pass_json,
-        "icon.png": _PNG_1x1,
-        "icon@2x.png": _PNG_1x1,
-        "logo.png": _PNG_1x1,
-        "logo@2x.png": _PNG_1x1,
+        "icon.png": _PNG_1x1, "icon@2x.png": _PNG_1x1,
+        "logo.png": _PNG_1x1, "logo@2x.png": _PNG_1x1,
     }
     manifest = {name: _sha1(data) for name, data in files.items()}
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
-    # NOTE: real .pkpass requires PKCS#7 signature over manifest.json using an Apple
-    # Developer Pass Type ID certificate. Preview MVP ships an empty signature; iOS
-    # will refuse to install until real credentials are plugged in.
-    signature_bytes = b""
-
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, data in files.items():
             zf.writestr(name, data)
         zf.writestr("manifest.json", manifest_bytes)
-        zf.writestr("signature", signature_bytes)
+        zf.writestr("signature", b"")
     buf.seek(0)
-
     filename = f"fiskid-{profile['_id']}.pkpass"
     return Response(
         content=buf.getvalue(),
@@ -790,34 +914,26 @@ async def wallet_apple(token: str):
 @api_router.get("/wallet/google/{token}")
 async def wallet_google(token: str):
     profile = await _wallet_load(token)
-    # Real Google Wallet requires a JWT signed with a Google Cloud service account
-    # (RS256) referencing a real Issuer ID + Class ID. Preview MVP signs with our
-    # local HS256 secret so the link structure is real; Google will refuse until
-    # a service account is provided.
     if profile.get("entity_type") == "company":
         header = profile.get("business_name") or "FiskID"
     else:
         header = " ".join([profile.get("first_name") or "", profile.get("last_name") or ""]).strip() or "FiskID"
     object_id = f"{GOOGLE_WALLET_ISSUER_ID}.fiskid-{profile['_id']}"
     generic_object = {
-        "id": object_id,
-        "classId": GOOGLE_WALLET_CLASS_ID,
-        "genericType": "GENERIC_TYPE_UNSPECIFIED",
-        "hexBackgroundColor": "#050505",
+        "id": object_id, "classId": GOOGLE_WALLET_CLASS_ID,
+        "genericType": "GENERIC_TYPE_UNSPECIFIED", "hexBackgroundColor": "#050505",
         "cardTitle": {"defaultValue": {"language": "it-IT", "value": "FiskID"}},
         "subheader": {"defaultValue": {"language": "it-IT", "value": "Identità fiscale"}},
         "header": {"defaultValue": {"language": "it-IT", "value": header}},
     }
     google_jwt_payload = {
         "iss": "fiskid-preview@placeholder.iam.gserviceaccount.com",
-        "aud": "google",
-        "typ": "savetowallet",
+        "aud": "google", "typ": "savetowallet",
         "iat": int(datetime.now(timezone.utc).timestamp()),
         "payload": {"genericObjects": [generic_object]},
     }
     unsigned = jwt.encode(google_jwt_payload, JWT_SECRET, algorithm="HS256")
-    save_url = f"https://pay.google.com/gp/v/save/{unsigned}"
-    return RedirectResponse(url=save_url, status_code=302)
+    return RedirectResponse(url=f"https://pay.google.com/gp/v/save/{unsigned}", status_code=302)
 
 
 @api_router.get("/")
@@ -829,10 +945,8 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True, allow_origins=["*"],
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

@@ -68,6 +68,11 @@ export default function EditFiscalProfile() {
     setLoading(true);
     try {
       const r = await apiGetProfile(token, id);
+      if (r.profile.is_delegate) {
+        toast.show("Solo l'amministratore può modificare questa identità", "info");
+        router.replace("/dashboard");
+        return;
+      }
       setProfile({ ...initial, ...r.profile });
     } catch (e: any) {
       toast.show(e.detail || "Errore caricamento", "error");

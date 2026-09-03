@@ -85,6 +85,10 @@ export type FiscalProfile = {
   id?: string;
   label?: string | null;
   is_default?: boolean;
+  is_delegate?: boolean;
+  permissions?: ("send" | "receive")[];
+  admin_email?: string | null;
+  delegation_id?: string | null;
   entity_type: "individual" | "professional" | "company";
   first_name?: string | null;
   last_name?: string | null;
@@ -137,6 +141,56 @@ export const apiSetDefaultProfile = (token: string, id: string) =>
 export const apiDeleteProfile = (token: string, id: string) =>
   apiRequest<{ ok: true }>(
     `/fiscal-profiles/${id}`,
+    { method: "DELETE" },
+    token,
+  );
+
+// -------- Delegates --------
+export type Delegate = {
+  id: string;
+  email: string;
+  permissions: ("send" | "receive")[];
+  status: "invited" | "active" | "revoked";
+  linked: boolean;
+  created_at: string | null;
+  resolved_at: string | null;
+  revoked_at: string | null;
+};
+
+export const apiListDelegates = (token: string, profileId: string) =>
+  apiRequest<{ delegates: Delegate[] }>(
+    `/fiscal-profiles/${profileId}/delegates`,
+    {},
+    token,
+  );
+
+export const apiAddDelegate = (
+  token: string,
+  profileId: string,
+  email: string,
+  permissions: ("send" | "receive")[],
+) =>
+  apiRequest<{ delegate: Delegate }>(
+    `/fiscal-profiles/${profileId}/delegates`,
+    { method: "POST", body: JSON.stringify({ email, permissions }) },
+    token,
+  );
+
+export const apiUpdateDelegate = (
+  token: string,
+  profileId: string,
+  delegateId: string,
+  permissions: ("send" | "receive")[],
+) =>
+  apiRequest<{ delegate: Delegate }>(
+    `/fiscal-profiles/${profileId}/delegates/${delegateId}`,
+    { method: "PATCH", body: JSON.stringify({ permissions }) },
+    token,
+  );
+
+export const apiRevokeDelegate = (token: string, profileId: string, delegateId: string) =>
+  apiRequest<{ ok: true }>(
+    `/fiscal-profiles/${profileId}/delegates/${delegateId}`,
     { method: "DELETE" },
     token,
   );

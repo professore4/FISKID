@@ -1,51 +1,55 @@
-# FiskID — MVP + Iteration 2 PRD
+# FiskID — MVP + Iter 2 + Iter 3 PRD
 
 ## Vision
-FiskID is a **Digital Fiscal Identity Card**. A person, professional, or company saves their tax data once and shares it privately with an operator (merchant / professional / office) that must issue an electronic invoice. Value promise: **"Mai più comunicare a voce i tuoi dati fiscali."**
+FiskID è una **Digital Fiscal Identity Card**. Un utente salva i propri dati fiscali una volta sola e li condivide privatamente con un operatore per l'emissione di fattura elettronica. Promise: **"Mai più comunicare a voce i tuoi dati fiscali."**
 
-## MVP Scope (iter 1 — shipped)
-1. Email/password auth (register, login, logout, forgot/reset password) — JWT + bcrypt.
-2. Fiscal profile: type (individual / professional / company), name/surname/business name, VAT, tax code, address, CAP, city, province, country, recipient code (SDI), PEC, contact email/phone. Format-only validation.
-3. Premium Fiscal Identity Card (wallet-like) as the hero of the private dashboard.
-4. Sharing via QR: backend generates a 32-byte URL-safe random token; app renders QR + copyable URL `/share/{token}`.
-5. Operator side: opens `/share/{token}` on web or scans in-app → read-only fiscal data + tap-to-copy + "Copia tutti i dati" + "Conferma acquisizione dati".
-6. Product event tracking to MongoDB.
+## MVP Scope (iter 1)
+Auth email/password (JWT), fiscal profile con validazioni formali (VAT, CF, CAP, SDI, PEC), premium Fiscal Identity Card, condivisione via QR (token random 32 byte), pagina pubblica `/share/{token}` con conferma acquisizione, tracking eventi in MongoDB.
 
-## Iteration 2 additions (this iteration — shipped)
+## Iter 2
 ### Multi Identità
-- One user can save many fiscal profiles (`Personale`, `Studio Rossi Srl`, …). Each profile has a `label`, `is_default` flag, and can be soft-deleted (`deleted_at`).
-- New endpoints: `GET/POST/PUT/DELETE /api/fiscal-profiles`, `GET /api/fiscal-profiles/{id}`, `POST /api/fiscal-profiles/{id}/set-default`. Legacy singular `POST/GET /api/fiscal-profile` still works.
-- Deleting a profile auto-revokes its active shares and auto-promotes another one as default.
-- Dashboard shows a horizontal chip switcher — tap to switch, long-press to set as default. "+ Aggiungi" opens the edit form in create mode.
-- Share screen accepts `?id=<profile_id>` and shows the identity label as a badge above the QR.
+Un utente può salvare N profili (personale, studio, azienda) con `label` e flag `is_default`. Chip switcher orizzontale nel dashboard. Soft-delete che revoca automaticamente le condivisioni attive.
 
-### Wallet Pass (preview MVP scaffold)
-- `POST /api/fiscal-profiles/{id}/wallet-tokens` returns short-lived signed URLs for Apple + Google wallet endpoints.
-- `GET /api/wallet/apple/{jwt}` returns a **structurally valid but unsigned** `.pkpass` ZIP (pass.json + manifest.json + empty signature + icon/logo PNGs). Real Apple Pass Type ID + `.p12` cert plug in later (env vars `APPLE_PASS_TYPE_ID`, `APPLE_TEAM_ID`).
-- `GET /api/wallet/google/{jwt}` redirects (302) to `https://pay.google.com/gp/v/save/{unsigned_jwt}`. Real GCP service account + Issuer ID plug in later.
-- Card screen has "Aggiungi a Apple Wallet" + "Aggiungi a Google Wallet" buttons. Toasts explain that this is a preview scaffold until certs are provided.
+### Wallet Pass (preview MVP)
+- `.pkpass` strutturalmente valido (unsigned – iOS rifiuta finché non plug-in Pass Type ID + `.p12`)
+- Google Wallet redirect a `pay.google.com/gp/v/save/{jwt}` (JWT HS256 placeholder – Google rifiuta finché non plug-in service account)
+- Nessun cambio di codice quando arrivano le credenziali: solo env var (`APPLE_PASS_TYPE_ID`, `APPLE_TEAM_ID`, `GOOGLE_WALLET_ISSUER_ID`, `GOOGLE_WALLET_CLASS_ID`)
+
+## Iter 3 (questa iterazione)
+### Home mode toggle
+Dashboard top: bottoni segmentati **"Sto pagando" / "Sto incassando"**
+- Sto pagando (default): mostra identità + card + azioni condividi
+- Sto incassando: mostra CTA "Apri scanner" per acquisire il QR del cliente
+
+### Delegati (solo profili aziendali)
+- L'amministratore (proprietario di un profilo `company`) invita delegati via email + sceglie permessi `send` / `receive` / entrambi
+- Se l'email invitata è già registrata → stato `active` immediato, altrimenti `invited` fino al register (auto-link on register e on login)
+- Il delegato vede il profilo aziendale nel dashboard con chip tratteggiato + badge DEL + banner giallo "Sei delegato di <admin> · <perm>"
+- Il delegato **non** può modificare/eliminare/impostare come default. Bottoni "Modifica dati" e "Delegati" nascosti; se tenta `PUT /fiscal-profiles/{id}` ottiene 404
+- Il delegato può creare una condivisione se ha permesso `send`; con solo `receive` il bottone Condividi è disabilitato (backend risponde 403)
+- L'admin gestisce delegati in `/delegates/{profileId}`: elenco, toggle permessi in-place, revoca
+- Endpoint: `GET/POST /api/fiscal-profiles/{id}/delegates`, `PATCH/DELETE /api/fiscal-profiles/{id}/delegates/{delegate_id}`
 
 ## Stack
-- **Backend**: FastAPI + Motor + MongoDB. All routes under `/api`. bcrypt (12 rounds, threadpool) + PyJWT (HS256, 30-day access token). Password reset via SHA-256 hashed one-time token (TTL 30 min).
-- **Frontend**: Expo Router (React Native + Web). Dark obsidian + emerald "Glass/Luxe DARK" personality. `expo-image`, `expo-linear-gradient`, `expo-camera`, `react-native-qrcode-svg`, `expo-secure-store` (native) / `AsyncStorage` (web).
-- **Data**: MongoDB collections `users`, `fiscal_profiles` (multi per user, soft delete via `deleted_at`), `shares`, `product_events`, `password_resets`. Unique indexes on `users.email` and `shares.share_token`; non-unique on `fiscal_profiles.user_id`.
+Backend FastAPI + Motor + MongoDB, bcrypt 12 rounds off-thread, PyJWT HS256 30-day token. Collections: `users`, `fiscal_profiles` (multi + soft-delete), `shares`, `product_events`, `password_resets` (TTL), `delegates` (unique per profile+email). Frontend Expo Router web+native, `expo-image`, `expo-linear-gradient`, `expo-camera`, `react-native-qrcode-svg`, `expo-secure-store` / `AsyncStorage`.
 
 ## Routes
-- `/` – auth-aware redirect (welcome vs dashboard)
-- `/welcome`, `/register`, `/login`, `/forgot-password`
+- `/`, `/welcome`, `/register`, `/login`, `/forgot-password`
 - `/onboarding` – 3-step value carousel
-- `/dashboard` – identity switcher + hero card + action rows + share history
-- `/card` — accepts `?id=<profile>`; shows detail + Apple/Google Wallet buttons + sticky "Condividi dati fiscali"
-- `/fiscal-profile/edit` — accepts `?id=<profile>`; create if omitted, update if provided; supports delete when editing
-- `/history` — full share history
-- `/share` — accepts `?id=<profile>`; renders QR + copy link for that identity
-- `/scanner` — operator in-app scanner (native only; web fallback)
-- `/share/[token]` — **public** operator page (no auth). Works on iOS, Android, and Web.
-
-## Out of scope
-Invoice issuance, SDI integration, TeamSystem/Zucchetti integrations, payments, cashback, loyalty, AI, OCR, document management, chat, complex notifications, **real Apple/Google Wallet signing** (structure ready, credentials pending).
+- `/dashboard` – mode toggle + identity switcher + card + actions + history
+- `/card?id=` – detail + wallet buttons (or delegate banner) + sticky share CTA
+- `/fiscal-profile/edit?id=` – create/update/delete (owner-only; delegates get redirected)
+- `/delegates/[profileId]` – admin-only management of company delegates
+- `/share?id=` – QR + copy link for the selected identity
+- `/scanner` – in-app QR scanner (native only)
+- `/history` – full share history
+- `/share/[token]` – public operator page (no auth)
 
 ## Test coverage
-- Iteration 1: 23/23 pytest backend tests passing (`/app/backend/tests/test_fiskid_api.py`).
-- Iteration 2: 23 additional pytest tests passing (`/app/backend/tests/test_multi_identity_wallet.py`). Total: 46/46.
-- Frontend end-to-end flows validated via Playwright on Expo Web preview.
+- iter 1: 23/23 pytest — auth + fiscal + shares
+- iter 2: 23/23 pytest — multi identity + wallet
+- iter 3: 28/28 pytest — delegates + auto-link + permission enforcement
+- **Total 74/74 pytest green**, tutti i flow frontend verificati via Playwright su Expo Web preview
+
+## Out of scope
+Emissione fattura elettronica, SDI, TeamSystem/Zucchetti, pagamenti, cashback, loyalty, AI, OCR, chat, notifiche complesse, **firma reale** dei Wallet pass (struttura pronta, credenziali pending).

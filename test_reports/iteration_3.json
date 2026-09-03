@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 3 (Delegates system + home mode toggle). BACKEND: 28/28 new pytest tests PASSED (POST /fiscal-profiles/{id}/delegates: non-company→400, unrelated-admin→404, self→400, empty perms→422, unregistered-email→status=invited+linked=false, duplicate→409, already-registered-email→status=active+linked=true; auto-link on register: invited-before-register → GET /fiscal-profiles shows is_delegate=true, is_default=false, permissions, admin_email, delegation_id, no _id/user_id leak; auto-link on login also resolves; delegate GET /fiscal-profiles/{id} works, unrelated→404; PUT/DELETE/set-default as delegate → 404 owner-only; POST /shares with delegated company id + send perm → 200 (profile_id and profile_label returned); receive-only → 403 with detail containing 'send'; empty body as delegate w/o owned default → 400 'Completa prima il tuo profilo fiscale'; wallet-tokens accessible by delegate; PATCH /delegates/{id}: wrong-admin→404, empty perms→422, missing perms field→422, valid update reflects in delegate list; DELETE /delegates/{id} revokes and removes from delegate GET; DELETE company profile revokes remaining active delegates; delegate can no longer see profile after profile deletion). Combined suite still green: 74/74 (23 iter1 + 23 iter2 + 28 iter3) when run with -n 0 (documented deterministic mode). FRONTEND: mode toggle visible on dashboard with 'Sto pagando' default; clicking 'Sto incassando' reveals receiving-panel + 'Apri scanner' which navigates to /scanner; for a company profile the 'Delegati' action row is present and navigates to /delegates/{profileId}; delegates screen has delegate-email-input + perm-send/perm-receive chips + add-delegate-button; adding a delegate for an unregistered email shows INVITATO badge in list; after registering the invited user and logging in, dashboard renders the delegated company card and warning banner 'Sei delegato di admin+…@fiskid.it · send + receive'; 'Modifica dati' and 'Delegati' action rows are correctly HIDDEN for the delegated identity; direct navigation to /fiscal-profile/edit?id={delegated_id} is redirected back to /dashboard (owner-only guard); /card page for the delegated profile shows the yellow 'Delega attiva' banner and does NOT render Apple/Google Wallet buttons.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "dashboard receive-only refresh", "issue": "After the admin PATCHes a delegate to receive-only, the delegate's already-open dashboard does not always reflect the new hint 'Permesso di invio non concesso' immediately on a soft reload (the action row briefly renders empty because `selected` state may be stale before /fiscal-profiles refetch completes). Backend contract is correct (permissions array updates on GET). A hard reload eventually shows the correct disabled hint. Minor UX; may be worth adding a refetch on window focus / navigation.", "testID": "dashboard-share-button", "priority": "LOW"},
+      {"component": "dashboard identity chip", "issue": "The 'DEL' badge on the identity chip is only rendered when the user has >1 profile (identity-switcher block). A delegate with 0 owned profiles + 1 delegated sees only the big card + banner — no chip switcher and therefore no 'DEL' pill. The banner still clearly communicates delegation, but the spec mentioned 'delegated identity chip with dashed border + DEL badge'. Consider always rendering the switcher when at least one delegated profile exists, or an inline DEL pill on the hero card.", "testID": "identity-chip-{id}", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global", "issues": ["Pre-existing RN Web deprecation warnings: shadow* props (multiple), Metro dev-preview 'Disconnected from Metro (1006)' banner on some renders. Non-blocking."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_delegates.py",
+    "/app/backend/tests/test_multi_identity_wallet.py",
+    "/app/backend/tests/test_fiskid_api.py",
+    "/app/test_reports/pytest/pytest_iter3.xml"
+  ],
+  "action_items": [
+    "(LOW) On delegate dashboard, refetch /api/fiscal-profiles on focus so permission changes made by the admin propagate to the currently-open dashboard without a manual hard reload.",
+    "(LOW) Ensure the 'DEL' badge / dashed border is visible for a delegate who has no owned profiles (identity-switcher currently renders only when profiles.length > 1). Consider rendering an inline DEL badge on the hero card when selected.is_delegate is true, independent of switcher visibility."
+  ],
+  "critical_code_review_comments": [
+    "server.py fetch_accessible_profile(): correct owner + active-delegate resolution; 403 when required_permission missing; 404 for unrelated users. Good separation from fetch_owned_profile() used for owner-only mutations.",
+    "server.py add_delegate(): correctly enforces company-only (400), admin-only via fetch_owned_profile (404), self-delegation (400), unique index on (fiscal_profile_id, delegate_email) via 409, and status='active'+resolved_at=now when delegate_user_id resolves immediately. Nice edge coverage.",
+    "server.py resolve_pending_invitations() is called both on register and login, matching iteration spec.",
+    "server.py DELETE /fiscal-profiles/{id}: soft-deletes and cascades delegates_col update_many(status=revoked). Delegate GET /fiscal-profiles then correctly filters out deleted profile.",
+    "server.py POST /shares: with delegate + fiscal_profile_id, the share doc records owner_user_id=admin (profile owner) and user_id=delegate (creator), as spec requires; empty-body path for a delegate without owned default correctly returns 400 with Italian 'Completa prima il tuo profilo fiscale'.",
+    "server.py wallet-tokens: uses fetch_accessible_profile (no required_permission) so both owner and delegate can materialize Apple/Google passes — matches spec.",
+    "dashboard.tsx: canSend derived from selected.permissions; ActionRow disabled + hint 'Permesso di invio non concesso' when receive-only. 'Modifica dati' correctly hidden when isDelegate; 'Delegati' correctly hidden when !isOwnCompany.",
+    "delegates/[profileId].tsx: testIDs present (delegate-email-input, perm-send, perm-receive, add-delegate-button, delegates-back). Refresh on Aggiungi delegato works — INVITATO badge appears immediately."
+  ],
+  "updated_files": ["/app/backend/tests/test_delegates.py (new)"],
+  "success_rate": {"backend": "100% (28/28 new + 46/46 regression = 74/74)", "frontend": "~95% (all specified iteration-3 flows verified; two low-priority UX concerns noted around receive-only refresh and DEL badge visibility for a delegate with 0 owned profiles)"},
+  "seed_data_creation": "Ephemeral users per test run: admin+<ts>@fiskid.it, delegate+<ts>@fiskid.it, delegate2+<ts>@fiskid.it, unrelated+<ts>@fiskid.it (backend pytest) and admin+<ts>@fiskid.it, dele+<ts>@fiskid.it (frontend Playwright). One company profile (ACME srl, VAT 12345678901) + one individual profile (Mario Rossi) per admin.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "For xdist parallel mode (default addopts -n 2 --dist loadscope in /app/backend/pytest.ini) the three backend test modules DO race with each other because they share Mongo state (same base URL) and time-based emails may collide within the same second. Run backend suite serially with `-n 0` for deterministic runs. Login form testIDs are login-email-input / login-password-input / login-submit-button (NOT login-email / login-password / login-submit). Delegates screen testIDs: delegate-email-input, perm-send, perm-receive, add-delegate-button, delegates-back. Delegate row items and INVITATO/ATTIVO badges do not have per-row testIDs yet — assert via body inner_text() or add testIDs before more granular UI tests. Do not test camera scanner on web (getUserMedia permission blocked).",
+  "rca_of_issue": "N/A — no blocking bugs. Two LOW-priority UX polish items documented in action_items."
+}
